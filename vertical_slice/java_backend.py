@@ -331,7 +331,10 @@ def compile_java(java_source: str, out_dir: str, class_name: str = "AtomicMain")
             cmd = ["cmd", "/c"] + cmd
         return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
-    r = _subprocess(["javac", "-d", out_dir, path])
+    try:
+        r = _subprocess(["javac", "-d", out_dir, path])
+    except FileNotFoundError:
+        raise AtomicError(f"javac not found on PATH; Java source written to {path} (compilation skipped)")
     if r.returncode != 0:
         raise AtomicError(f"Java compilation failed:\n{r.stderr}")
     return out_dir

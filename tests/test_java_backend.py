@@ -2,6 +2,7 @@
 """ATOMIC++ Java backend tests: interpreter output must equal javac output."""
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,19 +13,26 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "vertical_slice
 from interpreter import AtomicError, parse, tokenize, run_source
 from java_backend import emit_java, compile_java
 
+JAVAC_AVAILABLE = shutil.which("javac") is not None
+
+
+def _java_cmd(executable):
+    return ["cmd", "/c", executable] if os.name == "nt" else [executable]
+
 
 def _run_java(src: str):
     ast = parse(tokenize(src))
     java = emit_java(ast, "AtomicMain")
     out_dir = os.path.join(tempfile.gettempdir(), "atomicpp_java")
     compile_java(java, out_dir, "AtomicMain")
-    r = subprocess.run(["java", "-cp", out_dir, "AtomicMain"],
+    r = subprocess.run(_java_cmd("java") + ["-cp", out_dir, "AtomicMain"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("java run failed: " + r.stderr)
     return [ln for ln in r.stdout.split("\n") if ln != ""]
 
 
+@unittest.skipUnless(JAVAC_AVAILABLE, "javac not on PATH")
 class TestJavaBackend(unittest.TestCase):
     def test_boolean_operators_short_circuit(self):
         src = (

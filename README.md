@@ -3,6 +3,10 @@
 ATOMIC++ is a programming-language prototype with an interpreter, a native C/GCC
 path, and Java output. Performance and safety guarantees are not yet established.
 
+ATOMIC++ is being designed as its own language, with its own grammar, semantics,
+and identity. C/GCC and Java are execution routes used by the current prototype;
+their syntax is not the ATOMIC++ language design.
+
 ## Status: v0.7 development -- shared typed IR and expanding conformance
 
 | Engine | Command | Result |

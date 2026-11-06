@@ -11,6 +11,15 @@ The current full runner passed **101 tests** and **30 example commands across 8 
 
 The current implementation now has cross-backend short-circuit boolean operations, scalar fixed-length arrays, bounds checks, array length, and a built-in imported `math` namespace. General source-file modules are not implemented. Arrays cannot be nested or passed as function parameters. Floating-point arithmetic is still rejected by the checked frontend, despite backend-level operations, so the language does not yet have a complete numeric contract.
 
+## Language identity
+
+The language surface and its normative behavior belong to ATOMIC++ and should
+be designed from its own goals and tested with its intended users. Existing
+languages and compiler technologies are research subjects: their proven
+implementation techniques may inform the internals, but their syntax or overall
+identity should not be copied. GCC and Java are current implementation targets,
+not the definition of what ATOMIC++ programs look like.
+
 ## Main engineering bottlenecks
 
 1. **Correctness and semantics:** parser, IR builder, interpreter and emitters still need differential edge-case tests. Float operation admission and output formatting are not yet one settled contract. The verifier has structured control flow but no CFG.

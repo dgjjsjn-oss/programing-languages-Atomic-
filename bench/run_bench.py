@@ -6,6 +6,7 @@ Reports five-run timing distributions and validates against a fixed expected res
 """
 import os
 import platform
+import shutil
 import statistics
 import subprocess
 import sys
@@ -29,7 +30,16 @@ def resolve(cmd):
     return cmd
 
 
+def _resolve_cmd(cmd):
+    """Resolve bare tool names through PATHEXT so CreateProcess finds them."""
+    path = shutil.which(cmd[0])
+    if path is None:
+        raise SystemExit(f"toolchain not found: {cmd[0]}")
+    return [path] + cmd[1:]
+
+
 def measure_compile(cmd):
+    cmd = _resolve_cmd(cmd)
     times = []
     for _ in range(REPEATS):
         start = time.perf_counter()
@@ -44,6 +54,7 @@ def measure_run(cmd):
     times = []
     output = None
     command = resolve(cmd)
+    command = _resolve_cmd(command)
     for _ in range(REPEATS):
         start = time.perf_counter()
         result = subprocess.run(command, cwd=BENCH, capture_output=True, text=True)
@@ -71,26 +82,36 @@ LANG = [
 
 rows = []
 for name, source, build, run in LANG:
-    compile_times = measure_compile(build) if build else []
-    run_times = measure_run(run)
-    rows.append((name, compile_times, run_times, loc(os.path.join(BENCH, source))))
+    try:
+        compile_times = measure_compile(build) if build else []
+        run_times = measure_run(run)
+        rows.append((name, compile_times, run_times, loc(os.path.join(BENCH, source)), None))
+    except SystemExit as exc:
+        rows.append((name, [], [], loc(os.path.join(BENCH, source)), str(exc)))
 
-base = statistics.median(rows[0][2])
-rows.sort(key=lambda row: statistics.median(row[2]))
+c_row = next((r for r in rows if r[0] == "C" and r[4] is None and r[2]), None)
+base = statistics.median(c_row[2]) if c_row else None
+rows.sort(key=lambda row: statistics.median(row[2]) if row[2] else float("inf"))
 print(f"Host: {platform.platform()} | {platform.machine()} | {platform.processor()} | CPUs={os.cpu_count()}")
 for command in ("gcc", "g++", "rustc", "javac", "java", "node"):
-    result = subprocess.run([command, "--version"], capture_output=True, text=True)
-    version = (result.stdout or result.stderr).splitlines()[0] if result.returncode == 0 else "unavailable"
+    resolved = shutil.which(command)
+    result = subprocess.run([resolved, "--version"], capture_output=True, text=True) if resolved else None
+    version = ((result.stdout or result.stderr).splitlines()[0]
+               if result is not None and result.returncode == 0 else "unavailable")
     print(f"{command}: {version}")
 print(f"Repeats: {REPEATS}; runtime includes process startup; compiler/JIT caches are not controlled.")
 print("ATOMIC++ is not included: the existing files provide no equivalent language workload.")
 print("")
 print("LANG       COMPILE median [min,max] s      RUN min / median / max s       x slower  LOC")
 print("-" * 92)
-for name, compile_times, run_times, lines in rows:
+for name, compile_times, run_times, lines, error in rows:
     comp = (f"{statistics.median(compile_times):.3f} "
             f"[{min(compile_times):.3f},{max(compile_times):.3f}]") if compile_times else "n/a"
+    if error:
+        print(f"{name:<9} {'n/a':>26}  UNAVAILABLE: {error.splitlines()[0]}                      {lines:>3}")
+        continue
+    ratio = f"{statistics.median(run_times) / base:>8.1f}x" if base else "     n/a"
     print(f"{name:<9} {comp:>26}  {min(run_times):.4f} / {statistics.median(run_times):.4f} / {max(run_times):.4f}"
-          f"  {statistics.median(run_times) / base:>8.1f}x  {lines:>3}")
+          f"  {ratio}  {lines:>3}")
 print("-" * 92)
 print("workload: fib(27) + sum 1..20,000,000 + 1,000,000-element array; output checked against a fixed oracle")

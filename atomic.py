@@ -137,7 +137,13 @@ def main(argv):
             out_dir = os.path.join(BUILD_DIR, "java")
             os.makedirs(out_dir, exist_ok=True)
             java_src = emit_java(program, cls)
-            compile_java(java_src, out_dir, cls)
+            try:
+                compile_java(java_src, out_dir, cls)
+            except AtomicError as e:
+                if "javac not found" in str(e):
+                    print(f"javac not found on PATH: Java source written to {os.path.join(out_dir, cls)}.java (compile manually with javac)")
+                    return 1
+                raise
             print(f"java: {os.path.join(out_dir, cls)}.java")
             r = subprocess.run(["cmd", "/c", "java", "-cp", out_dir, cls], capture_output=True, text=True)
             sys.stdout.write(r.stdout)
