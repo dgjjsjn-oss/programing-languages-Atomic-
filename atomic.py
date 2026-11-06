@@ -1,4 +1,24 @@
 ﻿#!/usr/bin/env python3
+#
+# Copyright (c) 2026 ATOMIC++ Project Contributors / Project Owner
+#
+# All rights reserved.
+#
+# This repository and its contents are publicly available for viewing and
+# educational reference only.
+#
+# No permission is granted to copy, modify, distribute, sublicense, sell,
+# or commercially exploit any portion of this project without prior written
+# permission from the copyright holder.
+#
+# The copyright holder reserves all rights to the source code, project
+# architecture, documentation, designs, and original materials, subject to
+# applicable law and third-party licenses.
+#
+# This notice does not override the licenses of third-party components
+# included in or used by this project.
+#
+
 """ATOMIC++ command line.
 
 Usage:
@@ -64,7 +84,7 @@ def main(argv):
             program = checked_program(path, src)
             if program is None:
                 return 1
-            for line in Interpreter().run(program.body):
+            for line in Interpreter().run(program):
                 print(line)
             return 0
 
@@ -119,7 +139,7 @@ def main(argv):
             java_src = emit_java(program, cls)
             compile_java(java_src, out_dir, cls)
             print(f"java: {os.path.join(out_dir, cls)}.java")
-            r = subprocess.run(["java", "-cp", out_dir, cls], capture_output=True, text=True)
+            r = subprocess.run(["cmd", "/c", "java", "-cp", out_dir, cls], capture_output=True, text=True)
             sys.stdout.write(r.stdout)
             if r.returncode != 0:
                 sys.stderr.write(r.stderr)

@@ -92,7 +92,7 @@ class TestIRVerifier(unittest.TestCase):
         malformed = IRProgram((Conditional(condition, [], Span()),), {}, {}, ())
         self.assertTrue(any("Block body" in d["message"] for d in verify_ir(malformed)))
 
-    def test_boolean_operation_short_circuits_in_interpreter_and_is_explicitly_unavailable_in_backends(self):
+    def test_boolean_operation_short_circuits_in_interpreter_and_has_native_lowerings(self):
         false_value = Literal(False, BOOL, Span())
         true_value = Literal(True, BOOL, Span())
         expression = BooleanOperation("and", (false_value, true_value), BOOL, Span())
@@ -100,10 +100,8 @@ class TestIRVerifier(unittest.TestCase):
         self.assertEqual(verify_ir(program), [])
         output = Interpreter().run(program.body)
         self.assertIn("False", output)
-        with self.assertRaisesRegex(AtomicError, "boolean operations are not supported"):
-            emit_c(program)
-        with self.assertRaisesRegex(AtomicError, "boolean operations are not supported"):
-            emit_java(program)
+        self.assertIn("&&", emit_c(program))
+        self.assertIn("&&", emit_java(program))
 
 
 if __name__ == "__main__":

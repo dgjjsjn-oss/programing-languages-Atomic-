@@ -1,6 +1,6 @@
 # ATOMIC++ Architecture
 
-**Current milestone:** v0.6 — shared structured typed IR
+**Current milestone:** v0.7 development — typed IR backend consistency
 
 **Implementation:** Python front end, native C via GCC, Java via `javac`
 **Status:** Prototype. Feature support is limited to the tested subset below.
@@ -45,10 +45,12 @@ immediately builds and verifies typed IR.
 | Float arithmetic through checked CLI | Checker currently rejects it | Checker currently rejects it | Checker currently rejects it |
 | Text literals and value equality | Supported | Supported | Supported |
 | Text concatenation | Supported | Rejected explicitly | Supported |
-| Arrays | Supported | Rejected explicitly | Rejected explicitly |
-| `math.add/sub/mul` | Supported | Rejected explicitly | Rejected explicitly |
-| `len` | Supported by interpreter | Rejected explicitly | Rejected explicitly |
-| Boolean output formatting | Python `True`/`False` | Integer `1`/`0` | Integer values; comparison expressions print Java booleans |
+| Boolean `not` / short-circuit `and` / `or` | Supported | Supported | Supported |
+| Fixed-size mutable arrays of scalar types | Supported | Supported | Supported |
+| `len(array)` and bounds checks | Supported | Supported | Supported |
+| Imported built-in `math.add/sub/mul` | Supported | Supported | Supported |
+| User-authored file modules and exports | Not supported | Not supported | Not supported |
+| Boolean output formatting | `True`/`False` | `True`/`False` | `True`/`False` |
 
 These are prototype capabilities, not performance or safety guarantees. The
 README's Known gaps section records the current float-formatting difference
@@ -70,11 +72,15 @@ as `3.1400000000000001`; this is an open conformance issue.
 
 ## Limitations
 
-- Arrays and module calls have typed IR nodes but are not implemented by C or
-  Java; unsupported constructs produce explicit backend errors.
+- Arrays are fixed-length, scalar-element arrays; nested arrays and arrays as
+  function arguments are not supported. Empty literals default to `int[]`.
+- The only module is the built-in `math` namespace (`add`, `sub`, `mul`).
+  Cross-file modules, exports and cycle detection need a project loader.
 - No records, generics, async, concurrency, package manager, or standard
   library beyond the current interpreter's small built-ins.
-- No ARC, garbage collector, or dynamic text/list allocation runtime exists.
+- C array literals use tracked heap storage released at process exit. There is
+  no language-wide ownership, borrow, or lifetime system, and no dynamic text
+  allocation strategy shared by the backends.
 - There is no CFG, SSA, optimizer, parser fuzzer, or randomized differential
   generator yet.
 - The compiler has no cross-platform CI. Current verification uses the local

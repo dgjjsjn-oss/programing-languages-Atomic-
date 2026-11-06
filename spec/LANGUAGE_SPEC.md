@@ -188,7 +188,10 @@ afterwards (§4.1 rules 4-5), so `each i from 5 to 7` leaves `i` equal to `7` an
 
 ## 8. Collections (Arrays)
 
-Phase 1 supports fixed-size integer arrays created with a literal.
+The current implementation supports fixed-length mutable arrays of `int`,
+`float`, `bool`, and `text`, created with a literal. An empty literal defaults
+to `int[]`. Nested arrays, array comparison, and arrays as function parameters
+are rejected by semantic analysis.
 
 ```atpp
 start:
@@ -196,7 +199,11 @@ start:
     say scores[0]
 ```
 
-Array access is bounds-checked. Accessing outside the array produces a clear error message.
+Array access and assignment are bounds-checked. `len(array)` returns its fixed
+element count. Array variables are references: assigning or passing an array
+value aliases its elements (array parameters are not yet supported). The C
+backend copies literal elements into tracked allocations and frees those
+allocations when the process exits; Java and the interpreter use managed arrays.
 
 ---
 
@@ -208,7 +215,10 @@ start:
     say math.add(2, 3)
 ```
 
-Phase 1: `use` is reserved but not yet implemented beyond the built-in `math` module in the interpreter.
+Current supported scope: `use math` imports the built-in namespace with exported
+`add`, `sub`, and `mul` operations. Calls without the import are rejected.
+User-authored modules, visibility declarations, file resolution, and circular
+dependency detection are not implemented yet.
 
 ---
 
@@ -260,9 +270,10 @@ have. Each entry is a bug or a missing feature, not a design decision.
 
 | Gap | Actual behaviour today |
 |-----|------------------------|
-| `say` on a bool | Interpreter prints `True`/`False`; the C backend prints `1`/`0`; the Java backend prints `false`/`true` when the expression lowers to a Java comparison and `1`/`0` otherwise. `bool` has no distinct type in the backends, so none of the three can be declared canonical yet. |
-| Arrays | Interpreter only. The C backend reports "array literals not supported yet"; the Java backend rejects them. |
-| Modules | The interpreter hardcodes `math.add/sub/mul`; the C backend rejects method calls; the Java backend emits a call to a class that does not exist. |
+| Float output formatting | C uses 17-significant-digit round-trip formatting; the interpreter and Java use shorter decimal output. Values are binary64, and comparison of formatted strings does not prove a numeric mismatch. |
+| Arrays | Fixed-length mutable scalar arrays (int/float/bool/text) are supported in all engines. Empty literals default to int arrays. Nested arrays and array function parameters are not supported. |
+| Modules | `use math` and `math.add/sub/mul` work consistently. User modules, exports, cross-file resolution, and cycle detection await a module loader. |
+| Logical boolean operators | `not`, `and`, and `or` are supported with short-circuit evaluation. |
 | "A name keeps one type" (§4) | Not enforced anywhere. |
 | Semantic analysis of types | The analyzer knows only four coarse types (`int`, `float`, `string`, `array`), types every function parameter as `int`, and cannot see inside arrays or modules. It catches undefined names and arity errors, not type errors. |
 

@@ -15,9 +15,7 @@ EXAMPLES = ROOT / "vertical_slice" / "examples"
 # Examples excluded from interpreter/backend output comparison until their
 # features have identical semantics in every engine.
 NO_CROSS_BACKEND_CONFORMANCE = {
-    "arrays.atpp": "arrays are interpreter-only",
-    "math_module.atpp": "module calls are interpreter-only",
-    "variables.atpp": "bool printing and shortest float formatting differ",
+    "variables.atpp": "C prints round-trip float precision (3.1400000000000001), while the interpreter/Java use shorter decimal forms",
 }
 
 

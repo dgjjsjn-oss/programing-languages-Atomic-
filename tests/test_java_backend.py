@@ -26,14 +26,63 @@ def _run_java(src: str):
 
 
 class TestJavaBackend(unittest.TestCase):
-    def test_java_backend_rejects_unsupported_arrays_and_modules(self):
-        array_program = parse(tokenize("start:\n    xs = [1, 2]\n    say xs[0]\n"))
-        with self.assertRaisesRegex(AtomicError, "arrays not supported"):
-            emit_java(array_program)
+    def test_boolean_operators_short_circuit(self):
+        src = (
+            "make noisy():\n"
+            "    say 999\n"
+            "    give true\n"
+            "start:\n"
+            "    say false and noisy()\n"
+            "    say true or noisy()\n"
+            "    say not (false or false)\n"
+            "    say (2 + 3 is 5) and true\n"
+            "    say not 1 is 2\n"
+            "    say true or false and false\n"
+        )
+        expected = ["False", "True", "True", "True", "True", "True"]
+        self.assertEqual(run_source(src), expected)
+        self.assertEqual(_run_java(src), expected)
 
-        module_program = parse(tokenize("use math\nstart:\n    say math.add(1, 2)\n"))
-        with self.assertRaisesRegex(AtomicError, "module calls are not supported"):
-            emit_java(module_program)
+    def test_arrays_conform(self):
+        src = (
+            "start:\n"
+            "    empty = []\n"
+            "    say len(empty)\n"
+            "    values = [4, 5]\n"
+            "    values[0] = 9\n"
+            "    say values[0]\n"
+            "    words = [\"a\", \"b\"]\n"
+            "    words[1] = \"c\"\n"
+            "    say words[1]\n"
+            "    ratios = [2.5]\n"
+            "    say ratios[0]\n"
+            "    flags = [true, false]\n"
+            "    say flags[1]\n"
+        )
+        expected = ["0", "9", "c", "2.5", "False"]
+        self.assertEqual(run_source(src), expected)
+        self.assertEqual(_run_java(src), expected)
+
+    def test_java_array_index_bounds_check(self):
+        src = "start:\n    xs = [1]\n    say xs[1]\n"
+        java = emit_java(parse(tokenize(src)), "AtomicBounds")
+        out_dir = os.path.join(tempfile.gettempdir(), "atomicpp_java_bounds")
+        compile_java(java, out_dir, "AtomicBounds")
+        result = subprocess.run(["java", "-cp", out_dir, "AtomicBounds"], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Array index out of bounds: 1 (length 1)", result.stderr)
+
+    def test_math_module_conforms(self):
+        src = (
+            "use math\n"
+            "start:\n"
+            "    say math.add(1, 2)\n"
+            "    say math.mul(3, 4)\n"
+            "    say math.add(9223372036854775807, 1)\n"
+        )
+        expected = ["3", "12", "-9223372036854775808"]
+        self.assertEqual(run_source(src), expected)
+        self.assertEqual(_run_java(src), expected)
 
     def test_arithmetic_loop_condition(self):
         src = (

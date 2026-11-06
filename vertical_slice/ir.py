@@ -273,6 +273,7 @@ class IRProgram(IRNode):
     diagnostics: tuple[dict[str, Any], ...]
     span: Span = Span()
     function_locals: dict[str, dict[str, Type]] = field(default_factory=dict)
+    imports: tuple[str, ...] = ()
     legacy_type = "program"
 
     def __iter__(self):
@@ -309,6 +310,8 @@ class _Builder:
                 self.functions[name] = (params, INT)
                 self.function_nodes[name] = stmt
         self.globals: dict[str, Type] = {}
+        self.imports = {stmt.get("module") for stmt in ast
+                        if isinstance(stmt, dict) and stmt.get("type") == "use"}
 
     def issue(self, code: str, message: str, node: Any) -> None:
         self.diags.append(_diagnostic(code, message, _span(node)))
@@ -336,6 +339,17 @@ class _Builder:
             if operand.value_type not in (INT, FLOAT, UNKNOWN):
                 self.issue("invalid_operation", f"Invalid operand for unary '{node.get('op')}': {operand.value_type}", node)
             return Unary(node.get("op"), operand, operand.value_type, span)
+        if kind == "boolop":
+            op = node.get("op")
+            operands = tuple(self.expr(item, env) for item in node.get("operands") or ())
+            if op not in ("and", "or", "not"):
+                self.issue("invalid_operation", f"Unknown boolean operation '{op}'", node)
+            if (op == "not" and len(operands) != 1) or (op in ("and", "or") and len(operands) < 2):
+                self.issue("invalid_operation", f"Boolean operation '{op}' has the wrong number of operands", node)
+            for operand in operands:
+                if operand.value_type not in (BOOL, UNKNOWN):
+                    self.issue("invalid_operation", f"Boolean operation '{op}' expects bool operands", node)
+            return BooleanOperation(op, operands, BOOL, span)
         if kind == "binop":
             op = node.get("op")
             left = self.expr(node.get("left"), env)
@@ -346,6 +360,8 @@ class _Builder:
                     lt == rt or (lt in (INT, FLOAT) and rt in (INT, FLOAT))
                 ):
                     self.issue("invalid_operation", f"Invalid comparison '{op}': {lt} vs {rt}", node)
+                if (isinstance(lt, Type) and lt.name == "list") or (isinstance(rt, Type) and rt.name == "list"):
+                    self.issue("invalid_operation", "Array comparison is not supported", node)
                 return Comparison(op, left, right, BOOL, span)
             if op == "+" and lt == TEXT and rt == TEXT:
                 return StringOperation(op, left, right, TEXT, span)
@@ -380,7 +396,10 @@ class _Builder:
         if kind == "method_call":
             args = tuple(self.expr(arg, env) for arg in node.get("args") or ())
             module, method = node.get("module"), node.get("method")
-            if module != "math" or method not in ("add", "sub", "mul"):
+            if module not in self.imports:
+                self.issue("missing_import", f"Module '{module}' must be imported with 'use {module}'", node)
+                result = UNKNOWN
+            elif module != "math" or method not in ("add", "sub", "mul"):
                 self.issue("unsupported_module", f"Unsupported module operation '{module}.{method}'", node)
                 result = UNKNOWN
             elif len(args) != 2:
@@ -393,7 +412,11 @@ class _Builder:
             return ModuleCall(module, method, args, result, span)
         if kind == "array":
             elements = tuple(self.expr(item, env) for item in node.get("elements") or ())
-            elem_type = elements[0].value_type if elements else UNKNOWN
+            # Empty literals have a deterministic element type in v0.7. A later
+            # typed literal syntax may allow another choice at the use site.
+            elem_type = elements[0].value_type if elements else INT
+            if isinstance(elem_type, Type) and elem_type.name == "list":
+                self.issue("unsupported_array", "Nested arrays are not supported", node)
             for item in elements[1:]:
                 if item.value_type != elem_type and UNKNOWN not in (item.value_type, elem_type):
                     self.issue("invalid_operation", "Array elements must have one type", node)
@@ -466,6 +489,10 @@ class _Builder:
             elif kind == "stop":
                 result.append(Stop(span))
             elif kind == "use":
+                if in_function:
+                    self.issue("invalid_import", "Module imports must be at the top level", node)
+                elif node.get("module") != "math":
+                    self.issue("unsupported_module", f"Module '{node.get('module')}' is not available", node)
                 result.append(Use(node.get("module"), span))
             elif kind == "func":
                 # Top-level function nodes are inserted in a separate pass.
@@ -518,12 +545,16 @@ class _Builder:
 
         # Keep functions first, as every existing backend expects.
         body = tuple(functions) + typed_top
-        program = IRProgram(body, dict(self.globals), dict(self.functions), tuple(self.diags), function_locals=function_locals)
+        program = IRProgram(body, dict(self.globals), dict(self.functions), tuple(self.diags),
+                            function_locals=function_locals,
+                            imports=tuple(sorted(m for m in self.imports if isinstance(m, str))))
         verifier_diags = verify_ir(program)
         if verifier_diags:
             existing_spans = {(d["line"], d["col"]) for d in self.diags}
             verifier_diags = [d for d in verifier_diags if (d["line"], d["col"]) not in existing_spans]
-            program = IRProgram(body, dict(self.globals), dict(self.functions), tuple(self.diags + verifier_diags), function_locals=function_locals)
+            program = IRProgram(body, dict(self.globals), dict(self.functions), tuple(self.diags + verifier_diags),
+                                function_locals=function_locals,
+                                imports=tuple(sorted(m for m in self.imports if isinstance(m, str))))
         return program
 
 
@@ -572,6 +603,9 @@ def verify_ir(program: Any) -> list[dict[str, Any]]:
     if not isinstance(program.function_types, dict):
         error("Program function type table must be a mapping", program)
         return diags
+    if not isinstance(program.imports, tuple) or any(not isinstance(name, str) for name in program.imports):
+        error("Program imports must be a sequence of module names", program)
+        return diags
     valid_types = {INT, FLOAT, BOOL, TEXT, VOID, UNKNOWN}
 
     def valid_type(value: Any) -> bool:
@@ -579,7 +613,9 @@ def verify_ir(program: Any) -> list[dict[str, Any]]:
             return False
         if value in valid_types:
             return True
-        return value.name == "list" and value.element != VOID and valid_type(value.element)
+        return (value.name == "list" and value.element != VOID
+                and not (isinstance(value.element, Type) and value.element.name == "list")
+                and valid_type(value.element))
 
     for name, ty in program.global_types.items():
         if not isinstance(name, str) or not valid_type(ty):
@@ -632,7 +668,7 @@ def verify_ir(program: Any) -> list[dict[str, Any]]:
                 valid_operator = expr.op in ("is", "is not", "<", ">", "<=", ">=")
                 valid_operands = compatible and (
                     expr.op in ("is", "is not") or lt in (INT, FLOAT, UNKNOWN)
-                )
+                ) and not (isinstance(lt, Type) and lt.name == "list") and not (isinstance(rt, Type) and rt.name == "list")
                 if not valid_operator or not valid_operands or expr.value_type != BOOL:
                     error("Invalid comparison operation or result type", expr)
         elif isinstance(expr, Unary):
@@ -693,7 +729,9 @@ def verify_ir(program: Any) -> list[dict[str, Any]]:
                 check_expr(item, env)
             if any(not isinstance(item, Expr) for item in expr.args):
                 return
-            if expr.module != "math" or expr.method not in ("add", "sub", "mul"):
+            if expr.module not in program.imports:
+                error("Module call requires an import", expr)
+            elif expr.module != "math" or expr.method not in ("add", "sub", "mul"):
                 error("Unsupported module operation", expr)
             elif len(expr.args) != 2 or any(a.value_type not in (INT, FLOAT, UNKNOWN) for a in expr.args):
                 error("Invalid math module arguments", expr)

@@ -1,4 +1,24 @@
 #!/usr/bin/env python3
+#
+# Copyright (c) 2026 ATOMIC++ Project Contributors / Project Owner
+#
+# All rights reserved.
+#
+# This repository and its contents are publicly available for viewing and
+# educational reference only.
+#
+# No permission is granted to copy, modify, distribute, sublicense, sell,
+# or commercially exploit any portion of this project without prior written
+# permission from the copyright holder.
+#
+# The copyright holder reserves all rights to the source code, project
+# architecture, documentation, designs, and original materials, subject to
+# applicable law and third-party licenses.
+#
+# This notice does not override the licenses of third-party components
+# included in or used by this project.
+#
+
 """ATOMIC++ Phase 1 vertical slice interpreter.
 
 A minimal, working interpreter for a subset of ATOMIC++ syntax.
@@ -40,7 +60,7 @@ TT_DOT = "DOT"         # '.'
 
 KEYWORDS = {
     "start", "stop", "say", "make", "use", "when", "each", "give",
-    "true", "false", "from", "to"
+    "true", "false", "from", "to", "and", "or", "not"
 }
 
 BINARY_OPS = {"+", "-", "*", "/", "is", "is not", "<", ">", "<=", ">="}
@@ -536,6 +556,35 @@ class Parser:
     # ---- expressions ----
 
     def parse_expression(self):
+        return self.parse_or()
+
+    def _boolean_node(self, op, operands):
+        return {"type": "boolop", "op": op, "operands": tuple(operands),
+                "line": operands[0]["line"], "col": operands[0]["col"]}
+
+    def parse_or(self):
+        node = self.parse_and()
+        while self.peek().ttype == TT_KEYWORD and self.peek().value == "or":
+            self.advance()
+            right = self.parse_and()
+            node = self._boolean_node("or", (node, right))
+        return node
+
+    def parse_and(self):
+        node = self.parse_not()
+        while self.peek().ttype == TT_KEYWORD and self.peek().value == "and":
+            self.advance()
+            right = self.parse_not()
+            node = self._boolean_node("and", (node, right))
+        return node
+
+    def parse_not(self):
+        if self.peek().ttype == TT_KEYWORD and self.peek().value == "not":
+            tok = self.advance()
+            operand = self.parse_not()
+            node = self._boolean_node("not", (operand,))
+            node["line"], node["col"] = tok.line, tok.col
+            return node
         return self.parse_comparison()
 
     def parse_comparison(self):
@@ -803,13 +852,18 @@ class Interpreter:
         if ntype == "method_call":
             module = node["module"]
             method = node["method"]
+            if module not in getattr(self, "imports", set()):
+                raise AtomicError(f"Module '{module}' was not imported")
             args = [self.eval_expr(a, env) for a in node["args"]]
             if module == "math":
                 ops = {"add": lambda a, b: a + b,
                        "sub": lambda a, b: a - b,
                        "mul": lambda a, b: a * b}
                 if method in ops:
-                    return ops[method](*args)
+                    value = ops[method](*args)
+                    if all(isinstance(arg, int) and not isinstance(arg, bool) for arg in args):
+                        return _i64(value)
+                    return value
             raise AtomicError(f"Unknown module.method '{module}.{method}'")
         if ntype == "array":
             return [self.eval_expr(e, env) for e in node["elements"]]
@@ -880,6 +934,9 @@ class Interpreter:
             raise AtomicError(f"Unknown statement type {stype}")
 
     def run(self, statements):
+        if hasattr(statements, "body") and hasattr(statements, "imports"):
+            self.imports = set(statements.imports)
+            statements = statements.body
         try:
             self.execute_block(statements, self.globals)
         except SystemExit:
@@ -906,7 +963,7 @@ def run_source(text: str):
     program = build_ir(ast)
     interp = Interpreter()
     try:
-        interp.run(program.body)
+        interp.run(program)
     except SystemExit:
         pass
     return interp.output

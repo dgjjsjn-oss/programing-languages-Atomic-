@@ -1,85 +1,96 @@
-﻿#!/usr/bin/env python3
-"""Cross-language benchmark runner: identical workload, same machine.
+#!/usr/bin/env python3
+"""Reproducible host-language baseline; this is not an ATOMIC++ benchmark yet.
 
-Workload: fib(27) recursive + 20M loop sum + 1M-element array fill/sum.
-Measures: compile time, wall runtime (best of 3), source LOC, output correctness.
+Workload: recursive fib(27), sum 1..20,000,000, and a 1,000,000-element array.
+Reports five-run timing distributions and validates against a fixed expected result.
 """
 import os
+import platform
+import statistics
 import subprocess
+import sys
 import time
 
 BENCH = os.path.dirname(os.path.abspath(__file__))
+REPEATS = 5
+EXPECTED = "196418\n200000010000000\n999999000000"
 
 
 def loc(path):
-    n = 0
-    for line in open(path, encoding="utf-8"):
-        s = line.strip()
-        if s and not s.startswith("//") and not s.startswith("#"):
-            n += 1
-    return n
+    with open(path, encoding="utf-8-sig") as source:
+        return sum(1 for line in source
+                   if line.strip() and not line.lstrip().startswith(("//", "#")))
 
 
-def _resolve(cmd):
+def resolve(cmd):
     exe = cmd[0]
     if exe.endswith(".exe") and not os.path.isabs(exe):
         return [os.path.join(BENCH, exe)] + list(cmd[1:])
     return cmd
 
 
-def compile_cmd(cmd, runs=1):
-    best = 1e9
-    for _ in range(runs):
-        t0 = time.perf_counter()
-        r = subprocess.run(cmd, cwd=BENCH, capture_output=True, text=True)
-        t1 = time.perf_counter()
-        if r.returncode != 0:
-            raise SystemExit("COMPILE FAIL " + " ".join(cmd) + "\n" + r.stderr)
-        best = min(best, t1 - t0)
-    return best
+def measure_compile(cmd):
+    times = []
+    for _ in range(REPEATS):
+        start = time.perf_counter()
+        result = subprocess.run(cmd, cwd=BENCH, capture_output=True, text=True)
+        times.append(time.perf_counter() - start)
+        if result.returncode:
+            raise SystemExit("COMPILE FAIL " + " ".join(cmd) + "\n" + result.stderr)
+    return times
 
 
-def run_cmd(cmd, runs=3):
-    best = 1e9
-    out = ""
-    cmd = _resolve(cmd)
-    for _ in range(runs):
-        t0 = time.perf_counter()
-        r = subprocess.run(cmd, cwd=BENCH, capture_output=True, text=True)
-        t1 = time.perf_counter()
-        if r.returncode != 0:
-            raise SystemExit("RUN FAIL " + " ".join(cmd) + "\n" + r.stderr)
-        out = r.stdout.strip()
-        best = min(best, t1 - t0)
-    return best, out
+def measure_run(cmd):
+    times = []
+    output = None
+    command = resolve(cmd)
+    for _ in range(REPEATS):
+        start = time.perf_counter()
+        result = subprocess.run(command, cwd=BENCH, capture_output=True, text=True)
+        times.append(time.perf_counter() - start)
+        if result.returncode:
+            raise SystemExit("RUN FAIL " + " ".join(command) + "\n" + result.stderr)
+        current = result.stdout.strip()
+        if output is None:
+            output = current
+        elif current != output:
+            raise SystemExit("NONDETERMINISTIC OUTPUT " + " ".join(command))
+    if output != EXPECTED:
+        raise SystemExit(f"WRONG OUTPUT {command!r}: {output!r} != {EXPECTED!r}")
+    return times
 
 
 LANG = [
-    ("C",      "bench.c",    ["gcc", "-O2", "-o", "bench_c.exe", "bench.c"],        ["bench_c.exe"]),
-    ("C++",    "bench.cpp",  ["g++", "-O2", "-o", "bench_cpp.exe", "bench.cpp"],    ["bench_cpp.exe"]),
-    ("Rust",   "bench.rs",   ["rustc", "-O", "-o", "bench_rs.exe", "bench.rs"],     ["bench_rs.exe"]),
-    ("Java",   "Bench.java", ["javac", "Bench.java"],                               ["java", "-cp", ".", "Bench"]),
-    ("Node",   "bench.js",   None,                                                  ["node", "bench.js"]),
-    ("Python", "bench.py",   None,                                                  ["python", "bench.py"]),
+    ("C", "bench.c", ["gcc", "-O2", "-o", "bench_c.exe", "bench.c"], ["bench_c.exe"]),
+    ("C++", "bench.cpp", ["g++", "-O2", "-o", "bench_cpp.exe", "bench.cpp"], ["bench_cpp.exe"]),
+    ("Rust", "bench.rs", ["rustc", "-O", "-o", "bench_rs.exe", "bench.rs"], ["bench_rs.exe"]),
+    ("Java", "Bench.java", ["javac", "Bench.java"], ["java", "-cp", ".", "Bench"]),
+    ("Node", "bench.js", None, ["node", "bench.js"]),
+    ("Python", "bench.py", None, [sys.executable, "bench.py"]),
 ]
 
 rows = []
-expected = None
-for name, src, build, run in LANG:
-    ct = compile_cmd(build, 3) if build else 0.0
-    rt, out = run_cmd(run, 3)
-    if expected is None:
-        expected = out
-    ok = "MATCH" if out == expected else "DIFF"
-    rows.append((name, ct, rt, loc(os.path.join(BENCH, src)), ok))
+for name, source, build, run in LANG:
+    compile_times = measure_compile(build) if build else []
+    run_times = measure_run(run)
+    rows.append((name, compile_times, run_times, loc(os.path.join(BENCH, source))))
 
-rows.sort(key=lambda r: r[2])
-base = rows[0][2]
+base = statistics.median(rows[0][2])
+rows.sort(key=lambda row: statistics.median(row[2]))
+print(f"Host: {platform.platform()} | {platform.machine()} | {platform.processor()} | CPUs={os.cpu_count()}")
+for command in ("gcc", "g++", "rustc", "javac", "java", "node"):
+    result = subprocess.run([command, "--version"], capture_output=True, text=True)
+    version = (result.stdout or result.stderr).splitlines()[0] if result.returncode == 0 else "unavailable"
+    print(f"{command}: {version}")
+print(f"Repeats: {REPEATS}; runtime includes process startup; compiler/JIT caches are not controlled.")
+print("ATOMIC++ is not included: the existing files provide no equivalent language workload.")
 print("")
-print("LANGUAGE   COMPILE(s)  RUNTIME(s)  x_slower   LOC  OUTPUT")
-print("-" * 60)
-for name, ct, rt, lines, ok in rows:
-    print(f"{name:<10} {ct:>9.3f}  {rt:>10.4f}  {rt/base:>8.1f}x  {lines:>4}  {ok}")
-print("-" * 60)
-print("workload: fib(27) + sum 1..20,000,000 + 1,000,000-element array")
-print("runtime = best of 3 runs, wall clock, includes process startup")
+print("LANG       COMPILE median [min,max] s      RUN min / median / max s       x slower  LOC")
+print("-" * 92)
+for name, compile_times, run_times, lines in rows:
+    comp = (f"{statistics.median(compile_times):.3f} "
+            f"[{min(compile_times):.3f},{max(compile_times):.3f}]") if compile_times else "n/a"
+    print(f"{name:<9} {comp:>26}  {min(run_times):.4f} / {statistics.median(run_times):.4f} / {max(run_times):.4f}"
+          f"  {statistics.median(run_times) / base:>8.1f}x  {lines:>3}")
+print("-" * 92)
+print("workload: fib(27) + sum 1..20,000,000 + 1,000,000-element array; output checked against a fixed oracle")

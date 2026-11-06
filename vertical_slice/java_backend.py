@@ -21,31 +21,37 @@ except ImportError:
 from ir import (FLOAT as IR_FLOAT, INT as IR_INT, BOOL as IR_BOOL, TEXT as IR_TEXT,
                 Type, IRProgram, build_ir, loop_variables, verify_ir)
 
-INT = "int64_t"
-F64 = "double"
-STR = "const char *"
+J_INT = "long"
+J_F64 = "double"
+J_STR = "String"
 
 
 def _ctype(ty: Type) -> str:
     if ty in (IR_INT, IR_BOOL):
-        return INT
+        return J_INT
     if ty == IR_FLOAT:
-        return F64
+        return J_F64
     if ty == IR_TEXT:
-        return STR
+        return J_STR
     if ty.name == "list":
-        raise AtomicError("Java backend: arrays not supported yet")
+        if ty.element in (IR_INT, IR_BOOL):
+            return "long[]"
+        if ty.element == IR_FLOAT:
+            return "double[]"
+        if ty.element == IR_TEXT:
+            return "String[]"
+        raise AtomicError(f"Java backend: arrays of {ty.element} are not supported")
     raise AtomicError(f"Java backend: unsupported IR type {ty}")
 
 
 def _ir_backend_type(expr) -> str:
     ty = expr.get("inferred_type")
     if ty == IR_TEXT:
-        return STR
+        return J_STR
     if ty == IR_FLOAT:
-        return F64
+        return J_F64
     if ty in (IR_INT, IR_BOOL):
-        return INT
+        return J_INT
     raise AtomicError(f"Java backend: unsupported IR type {ty}")
 
 _J_KEYWORDS = {
@@ -59,7 +65,8 @@ _J_KEYWORDS = {
     "yield", "null", "true", "false",
 }
 
-_JTYPE = {INT: "long", F64: "double", STR: "String"}
+_JTYPE = {J_INT: "long", J_F64: "double", J_STR: "String",
+          "long[]": "long[]", "double[]": "double[]", "String[]": "String[]"}
 
 
 def _jident(name: str) -> str:
@@ -73,10 +80,12 @@ def _jtype(ctype: str) -> str:
 
 
 def _default(ctype: str) -> str:
-    if ctype == F64:
+    if ctype == J_F64:
         return "0.0"
-    if ctype == STR:
+    if ctype == J_STR:
         return '""'
+    if ctype.endswith("[]"):
+        return "null"
     return "0"
 
 
@@ -98,7 +107,17 @@ def _j_escape(s: str) -> str:
 
 def _expr(e, env, ftypes, state, in_main):
     if e.get("ir_kind") == "BooleanOperation":
-        raise AtomicError("Java backend: boolean operations are not supported yet")
+        operands = e.operands
+        op = e.op
+        if op == "not":
+            condition = _java_condition(operands[0], env, ftypes, state, in_main)
+            return f"(({condition}) ? 0L : 1L)"
+        if op in ("and", "or"):
+            symbol = "&&" if op == "and" else "||"
+            conditions = [_java_condition(item, env, ftypes, state, in_main) for item in operands]
+            joined = f" {symbol} ".join(conditions)
+            return f"(({joined}) ? 1L : 0L)"
+        raise AtomicError(f"Java backend: unsupported boolean operation {op!r}")
     t = e.get("type")
     if t == "int":
         return str(e["value"]) + "L"
@@ -106,6 +125,13 @@ def _expr(e, env, ftypes, state, in_main):
         return repr(float(e["value"]))
     if t == "string":
         return '"%s"' % _j_escape(str(e["value"]))
+    if t == "array":
+        element_type = _jtype(_ctype(e.value_type.element))
+        values = ", ".join(_expr(item, env, ftypes, state, in_main) for item in e.elements)
+        return f"new {element_type}[] {{{values}}}"
+    if t == "array_index":
+        index = _expr(e.index, env, ftypes, state, in_main)
+        return f"{_jident(e.var)}[_atomic_index({_jident(e.var)}, (long)({index}))]"
     if t == "bool":
         # bool is typed as long in this backend (see _JTYPE), so a bare Java
         # boolean literal would not compile against a `long` variable.
@@ -122,11 +148,11 @@ def _expr(e, env, ftypes, state, in_main):
         lt = _ir_backend_type(e["left"])
         rt = _ir_backend_type(e["right"])
         if op == "is":
-            if lt == STR and rt == STR:
+            if lt == J_STR and rt == J_STR:
                 return f"({a}.equals({b}))"
             return f"(({a}) == ({b}))"
         if op == "is not":
-            if lt == STR and rt == STR:
+            if lt == J_STR and rt == J_STR:
                 return f"(!{a}.equals({b}))"
             return f"(({a}) != ({b}))"
         sym = {"<": "<", ">": ">", "<=": "<=", ">=": ">=",
@@ -134,11 +160,18 @@ def _expr(e, env, ftypes, state, in_main):
         return f"(({a}) {sym} ({b}))"
     if t == "call":
         if e.get("name") == "len":
-            raise AtomicError("Java backend: len is not implemented yet")
+            if len(e.args) == 1 and isinstance(e.args[0].get("inferred_type"), Type) and e.args[0].get("inferred_type").name == "list":
+                return f"((long)({_expr(e.args[0], env, ftypes, state, in_main)}.length))"
+            raise AtomicError("Java backend: len is currently implemented for arrays only")
         args = ", ".join(_expr(a, env, ftypes, state, in_main) for a in e["args"])
         return f"{_jident(e['name'])}({args})"
     if t == "method_call":
-        raise AtomicError("Java backend: module calls are not supported yet")
+        if e.module != "math" or e.method not in ("add", "sub", "mul") or len(e.args) != 2:
+            raise AtomicError(f"Java backend: unsupported module call {e.module}.{e.method}")
+        a = _expr(e.args[0], env, ftypes, state, in_main)
+        b = _expr(e.args[1], env, ftypes, state, in_main)
+        symbol = {"add": "+", "sub": "-", "mul": "*"}[e.method]
+        return f"(({a}) {symbol} ({b}))"
     raise AtomicError(f"Java backend: unsupported expression type {t}")
 
 
@@ -146,9 +179,17 @@ def _stmt(s, indent, env, ftypes, state, each_vars, in_main):
     t = s.get("type")
     pad = "    " * indent
     if t == "say":
-        return f"{pad}System.out.println({_expr(s['expr'], env, ftypes, state, in_main)});"
+        value = _expr(s["expr"], env, ftypes, state, in_main)
+        if s["expr"].get("inferred_type") == IR_BOOL:
+            condition = value if _is_boolean_expr(s["expr"]) else f"(({value}) != 0L)"
+            return f'{pad}System.out.println(({condition}) ? "True" : "False");'
+        return f"{pad}System.out.println({value});"
     if t in ("var_assign", "assign"):
         return f"{pad}{_jident(s['name'])} = {_expr(s['expr'], env, ftypes, state, in_main)};"
+    if t == "array_assign":
+        index = _expr(s.index, env, ftypes, state, in_main)
+        value = _expr(s.expr, env, ftypes, state, in_main)
+        return f"{pad}{_jident(s.name)}[_atomic_index({_jident(s.name)}, (long)({index}))] = {value};"
     if t == "expr":
         return f"{pad}{_expr(s['expr'], env, ftypes, state, in_main)};"
     if t == "when":
@@ -205,6 +246,11 @@ def _is_boolean_expr(e) -> bool:
     return e.get("type") == "binop" and e.get("op") in ("is", "is not", "<", ">", "<=", ">=")
 
 
+def _java_condition(e, env, ftypes, state, in_main):
+    value = _expr(e, env, ftypes, state, in_main)
+    return value if _is_boolean_expr(e) else f"(({value}) != 0L)"
+
+
 def _decls(env, each_vars, exclude=()):
     """Declare every name at method scope, including loop variables.
 
@@ -237,7 +283,12 @@ def emit_java(ast, class_name="AtomicMain") -> str:
     body = [s for s in program if s.get("type") not in ("func", "use")]
     funcs = [s for s in program if s.get("type") == "func"]
 
-    out = [f"public class {class_name} {{", ""]
+    out = [f"public class {class_name} {{", "",
+           "    private static int _atomic_index(Object array, long index) {",
+           "        int length = java.lang.reflect.Array.getLength(array);",
+           '        if (index < 0 || index >= length) throw new IndexOutOfBoundsException("Array index out of bounds: " + index + " (length " + length + ")");',
+           "        return (int) index;",
+           "    }", ""]
     for name, ty in sorted(top_env.items()):
         out.append(f"    static {_jtype(ty)} {_jident(name)} = {_default(ty)};")
     if top_env:
@@ -273,7 +324,14 @@ def compile_java(java_source: str, out_dir: str, class_name: str = "AtomicMain")
     path = os.path.join(out_dir, class_name + ".java")
     with open(path, "w", encoding="utf-8") as f:
         f.write(java_source)
-    r = subprocess.run(["javac", "-d", out_dir, path], capture_output=True, text=True)
+    def _subprocess(cmd, **kw):
+        env = kw.pop("env", os.environ.copy())
+        env.pop("_JAVA_OPTIONS", None)  # global JVM options pollute measurements
+        if os.name == "nt":
+            cmd = ["cmd", "/c"] + cmd
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    r = _subprocess(["javac", "-d", out_dir, path])
     if r.returncode != 0:
         raise AtomicError(f"Java compilation failed:\n{r.stderr}")
     return out_dir

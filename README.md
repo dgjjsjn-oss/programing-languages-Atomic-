@@ -3,7 +3,7 @@
 ATOMIC++ is a programming-language prototype with an interpreter, a native C/GCC
 path, and Java output. Performance and safety guarantees are not yet established.
 
-## Status: v0.6 -- shared typed IR in use
+## Status: v0.7 development -- shared typed IR and expanding conformance
 
 | Engine | Command | Result |
 |---|---|---|
@@ -22,20 +22,15 @@ Run the complete test and example conformance suite from this folder:
     python run_tests.py
 
 It runs the unit tests, checks and interprets every example, and compares the
-interpreter with native C and Java where their output is currently conformant.
-Array and module examples remain interpreter-only; `variables.atpp` is skipped
-because the interpreter prints booleans as `True`/`False`, while C and Java
-store and print them as `1`/`0`. Float formatting also differs: for `3.14`,
-the interpreter prints `3.14` and C currently prints `3.1400000000000001`.
+interpreter with native C and Java where their output is conformant. Boolean
+operators, short-circuiting, typed arrays, bounds checks, and the imported
+`math` built-ins now run on all three engines. `variables.atpp` remains skipped
+because the C backend uses 17-digit round-trip formatting for `3.14` while the
+interpreter and Java print `3.14`; this is a text-format difference, not a
+different stored binary64 value.
 
-The lower-level test files can also be run individually:
-
-    python tests/test_interpreter.py    46 tests  OK
-    python tests/test_semantic.py        7 tests  OK
-    python tests/test_conformance.py    18 tests  OK   interpreter == native C
-    python tests/test_java_backend.py   10 tests  OK   interpreter == javac
-    python tests/test_diagnostics.py     4 tests  OK   diagnostic text is pinned
-    python tests/test_ir.py               8 tests  OK   typed nodes and verifier
+The unit-test counts change as regression coverage grows; use the full runner's
+result as the verified count rather than this documentation as a fixed number.
 
 The unified runner was verified on 2026-11-06. Only trust this table if you re-run it. On 2026-11-05 the suite did **not**
 match the previous claim in this file: the C preamble referenced an undefined macro, so
@@ -47,20 +42,20 @@ command that proves it.
 
 These are broken today and are not described anywhere as working:
 
-- **`say` on a bool:** the interpreter prints `True`/`False`; C and Java store booleans
-  as integer values and print `1`/`0`. Java comparison expressions can print `true`/`false`.
 - **Float formatting:** C prints `3.14` as `3.1400000000000001`; interpreter and Java print `3.14`.
-- **Arrays** work in the interpreter only; the C and Java backends reject them.
-- **Modules:** the interpreter supports `math.add/sub/mul`; C and Java report that module
-  calls are unsupported.
+- **General modules:** only the built-in `math` module is implemented consistently.
+  Source-file modules, exports, dependency graphs and cycle detection are not implemented.
+- **Array limits:** arrays cannot be nested or passed as function parameters; empty literals default to integer arrays.
 - **Floating-point arithmetic:** the interpreter and direct C/Java emitters can evaluate it,
   but the shared checker still rejects it to preserve its tested v0.5 diagnostic behavior.
-- **No ATOMIC++ memory model.** The C backend uses string-literal pointers; Java relies on
-  the JVM's memory manager. ATOMIC++ does not yet define ownership or manage heap values.
+- **No unified memory model.** C strings currently use literal pointers and C array
+  buffers are released at process exit; Java and the interpreter use managed values.
+  ATOMIC++ does not yet define user-visible ownership or lifetimes.
 
 Typed IR design and verifier: `arch/docs/TYPED_IR.md`.
 Full audit, feature matrix and roadmap: `arch/docs/AUDIT.md`.
 Sourced research behind the design decisions: `arch/docs/LANGUAGE_RESEARCH.md`.
+Current independent audit and toolchain/performance snapshot: `arch/docs/RESEARCH_ASSESSMENT.md`.
 
 ## Language
 
@@ -81,7 +76,12 @@ Keywords: `start stop say make use when each give true false from to`.
 Equality is `is` / `is not`; comparisons `< > <= >=`; arithmetic `+ - * /`;
 unary minus and grouping `(` `)` work. Blocks are indentation-based.
 
-Values: int (64-bit, wrapping), float (double), text, bool.
+Values: int (64-bit, wrapping), float (binary64), text, bool, and fixed-length mutable arrays of scalar values.
+
+Logical operators: `not`, `and`, `or`, with short-circuit evaluation.
+Arrays support integer, float, boolean and text elements, including `[]` (an
+empty integer array), indexing, indexed assignment and `len(array)`.
+`use math` imports the built-in `math.add`, `math.sub`, and `math.mul` functions.
 
 ## Design rules
 
@@ -111,8 +111,13 @@ Gradle. No dependencies are emitted, so it compiles inside the mod toolchain.
 
 ## Benchmarks
 
-`bench/` holds the same workload in C, C++, Rust, Java, Node and Python with
-`run_bench.py` measuring compile time, runtime, LOC and output equality.## Roadmap
+`python bench/run_bench.py` measures a fixed host-language workload in C, C++,
+Rust, Java, Node and Python with five-run distributions and a fixed output
+oracle. It does **not** include ATOMIC++; see
+`arch/docs/RESEARCH_ASSESSMENT.md` for results and why this is not an ATOMIC++
+performance claim.
+
+## Roadmap
 
 `arch/docs/AUDIT.md` -- verified implementation matrix, risks, next milestone.
 `arch/docs/MASTER_GOAL.md` -- the long-range target.
@@ -124,5 +129,8 @@ and the JVM actually solved these problems, with sources.
 M4.1 ("one truth") is done: comparison precedence is fixed, semantic analysis runs before
 `run`, `build` and `java`, and diagnostic wording is pinned by a golden test.
 
-Next milestone (M4.2): a typed IR that the backends consume, with a verifier, so a feature
-cannot mean different things in different backends. Then arrays in the C backend.
+v0.6 established the shared typed IR. v0.7 development adds logical operators,
+cross-backend arrays, and consistent built-in `math` calls. Float formatting,
+general source modules, function parameter typing, and a formal numeric contract
+remain open. See the research assessment for the targeted backend comparison
+and current benchmark baseline.

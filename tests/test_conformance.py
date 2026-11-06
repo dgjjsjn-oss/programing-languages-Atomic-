@@ -31,6 +31,23 @@ def _run_c(src: str):
 
 
 class TestConformance(unittest.TestCase):
+    def test_boolean_operators_short_circuit_across_backends(self):
+        src = (
+            "make noisy():\n"
+            "    say 999\n"
+            "    give true\n"
+            "start:\n"
+            "    say false and noisy()\n"
+            "    say true or noisy()\n"
+            "    say not (false or false)\n"
+            "    say (2 + 3 is 5) and true\n"
+            "    say not 1 is 2\n"
+            "    say true or false and false\n"
+        )
+        expected = ["False", "True", "True", "True", "True", "True"]
+        self.assertEqual(run_source(src), expected)
+        self.assertEqual(_run_c(src), expected)
+
     def test_conformance_arithmetic_when_each(self):
         src = (
             "start:\n"
@@ -171,7 +188,7 @@ class TestConformance(unittest.TestCase):
     # --- semantic consistency regressions (see LANGUAGE_SPEC.md 4.1, 6.1) ---
 
     def test_conformance_bool_literal_in_condition(self):
-        """bool literals must reach C as 1/0, not Python's True/False."""
+        """Bool literals lower to valid C and print the interpreter's spelling."""
         src = (
             "start:\n"
             "    alive = true\n"
@@ -225,14 +242,46 @@ class TestConformance(unittest.TestCase):
         self.assertEqual(run_source(src), ["42"])
         self.assertEqual(run_source(src), _run_c(src))
 
-    def test_c_backend_rejects_unsupported_arrays_and_modules(self):
-        array_program = parse(tokenize("start:\n    xs = [1, 2]\n    say xs[0]\n"))
-        with self.assertRaisesRegex(AtomicError, "arrays not supported"):
-            emit_c(array_program)
+    def test_arrays_conform_across_interpreter_and_c(self):
+        src = (
+            "start:\n"
+            "    empty = []\n"
+            "    say len(empty)\n"
+            "    values = [4, 5]\n"
+            "    values[0] = 9\n"
+            "    say values[0]\n"
+            "    words = [\"a\", \"b\"]\n"
+            "    words[1] = \"c\"\n"
+            "    say words[1]\n"
+            "    ratios = [2.5]\n"
+            "    say ratios[0]\n"
+            "    flags = [true, false]\n"
+            "    say flags[1]\n"
+        )
+        expected = ["0", "9", "c", "2.5", "False"]
+        self.assertEqual(run_source(src), expected)
+        self.assertEqual(_run_c(src), expected)
 
-        module_program = parse(tokenize("use math\nstart:\n    say math.add(1, 2)\n"))
-        with self.assertRaisesRegex(AtomicError, "module method calls not supported"):
-            emit_c(module_program)
+    def test_c_array_index_bounds_check(self):
+        src = "start:\n    xs = [1]\n    say xs[1]\n"
+        c = emit_c(parse(tokenize(src)))
+        exe = os.path.join(tempfile.gettempdir(), "atomicpp_array_bounds.exe")
+        compile_c(c, exe, portable=True, march_native=False)
+        result = subprocess.run([exe], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Array index out of bounds: 1 (length 1)", result.stderr)
+
+    def test_math_module_conforms_across_interpreter_and_c(self):
+        src = (
+            "use math\n"
+            "start:\n"
+            "    say math.add(1, 2)\n"
+            "    say math.mul(3, 4)\n"
+            "    say math.add(9223372036854775807, 1)\n"
+        )
+        expected = ["3", "12", "-9223372036854775808"]
+        self.assertEqual(run_source(src), expected)
+        self.assertEqual(_run_c(src), expected)
 
     def test_conformance_empty_range_binds_loop_variable(self):
         """An empty range still defines the name (LANGUAGE_SPEC.md 4.1 rule 4)."""

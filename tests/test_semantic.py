@@ -47,6 +47,16 @@ class TestSemantic(unittest.TestCase):
         src = "start:\n    say nope(1)\n    stop\n"
         self.assertIn("undefined_function", _codes(analyze(src)))
 
+    def test_math_module_must_be_imported(self):
+        src = "start:\n    say math.add(1, 2)\n"
+        self.assertIn("missing_import", _codes(analyze(src)))
+
+    def test_nested_arrays_and_array_comparison_are_rejected(self):
+        src = "start:\n    nested = [[1], [2]]\n    same = nested is nested\n"
+        codes = _codes(analyze(src))
+        self.assertIn("unsupported_array", codes)
+        self.assertIn("invalid_operation", codes)
+
     def test_arg_count_mismatch(self):
         src = (
             "make f(a, b):\n"

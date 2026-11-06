@@ -1,4 +1,24 @@
 ﻿#!/usr/bin/env python3
+#
+# Copyright (c) 2026 ATOMIC++ Project Contributors / Project Owner
+#
+# All rights reserved.
+#
+# This repository and its contents are publicly available for viewing and
+# educational reference only.
+#
+# No permission is granted to copy, modify, distribute, sublicense, sell,
+# or commercially exploit any portion of this project without prior written
+# permission from the copyright holder.
+#
+# The copyright holder reserves all rights to the source code, project
+# architecture, documentation, designs, and original materials, subject to
+# applicable law and third-party licenses.
+#
+# This notice does not override the licenses of third-party components
+# included in or used by this project.
+#
+
 """ATOMIC++ native backend -- typed C emitter + gcc driver.
 
 Pipeline: parser AST -> type inference -> C source -> gcc -> native binary.
@@ -70,6 +90,8 @@ def _c_default(ctype: str) -> str:
         return "0.0"
     if ctype == STR:
         return '""'
+    if ctype == "atomic_array":
+        return "(atomic_array){0, NULL}"
     return "0"
 
 
@@ -83,7 +105,8 @@ def _ty(e, env, ftypes, state):
     if ty == IR_TEXT:
         return STR
     if isinstance(ty, Type) and ty.name == "list":
-        raise AtomicError("C backend: arrays not supported yet")
+        _array_element_c(ty.element)
+        return "atomic_array"
     if ty is None:
         raise AtomicError("C backend requires typed IR expressions")
     raise AtomicError(f"C backend: unsupported IR type {ty}")
@@ -97,13 +120,33 @@ def _ctype(ty: Type) -> str:
     if ty == IR_TEXT:
         return STR
     if ty.name == "list":
-        raise AtomicError("C backend: arrays not supported yet")
+        _array_element_c(ty.element)
+        return "atomic_array"
     raise AtomicError(f"C backend: unsupported IR type {ty}")
+
+
+def _array_element_c(element: Type) -> str:
+    if element in (IR_INT, IR_BOOL):
+        return "int64_t"
+    if element == IR_FLOAT:
+        return "double"
+    if element == IR_TEXT:
+        return "const char *"
+    raise AtomicError(f"C backend: arrays of {element} are not supported")
 
 
 def _c_expr_str(node, env, ftypes, state):
     if node.get("ir_kind") == "BooleanOperation":
-        raise AtomicError("C backend: boolean operations are not supported yet")
+        operands = node.operands
+        op = node.op
+        if op == "not":
+            value = _c_expr_str(operands[0], env, ftypes, state)
+            return f"(!(({value}) != 0))"
+        if op in ("and", "or"):
+            symbol = "&&" if op == "and" else "||"
+            values = [f"(({_c_expr_str(item, env, ftypes, state)}) != 0)" for item in operands]
+            return "(" + f" {symbol} ".join(values) + ")"
+        raise AtomicError(f"C backend: unsupported boolean operation {op!r}")
     t = node.get("type")
     if t == "int":
         value = int(node["value"])
@@ -120,6 +163,16 @@ def _c_expr_str(node, env, ftypes, state):
         return repr(float(node["value"]))
     if t == "string":
         return '"%s"' % _c_escape(str(node["value"]))
+    if t == "array":
+        element_type = _array_element_c(node.value_type.element)
+        values = ", ".join(_c_expr_str(item, env, ftypes, state) for item in node.elements)
+        source = f"({element_type}[]){{{values}}}" if values else "NULL"
+        return f"_atomic_array_new({len(node.elements)}, sizeof({element_type}), {source})"
+    if t == "array_index":
+        element_type = _array_element_c(node.value_type)
+        target = _ident(node.var)
+        index = _c_expr_str(node.index, env, ftypes, state)
+        return f"(({element_type} *){target}.data)[_atomic_index({target}.length, (int64_t)({index}))]"
     if t == "var":
         return _ident(node["name"])
     if t == "unary":
@@ -155,15 +208,29 @@ def _c_expr_str(node, env, ftypes, state):
         return f"((int64_t)({a}) {sym} (int64_t)({b}))"
     if t == "call":
         if node.get("name") == "len":
-            raise AtomicError("C backend: len is not implemented yet")
+            if len(node.args) == 1 and isinstance(node.args[0].get("inferred_type"), Type) and node.args[0].get("inferred_type").name == "list":
+                array = _c_expr_str(node.args[0], env, ftypes, state)
+                return f"((int64_t)({array}).length)"
+            raise AtomicError("C backend: len is currently implemented for arrays only")
         args = ", ".join(_c_expr_str(a, env, ftypes, state) for a in node["args"])
         return f"{_ident(node['name'])}({args})"
     if t == "method_call":
-        raise AtomicError("C backend: module method calls not supported yet")
+        if node.module != "math" or node.method not in ("add", "sub", "mul") or len(node.args) != 2:
+            raise AtomicError(f"C backend: unsupported module call {node.module}.{node.method}")
+        a = _c_expr_str(node.args[0], env, ftypes, state)
+        b = _c_expr_str(node.args[1], env, ftypes, state)
+        if node.value_type == IR_FLOAT:
+            symbol = {"add": "+", "sub": "-", "mul": "*"}[node.method]
+            return f"((double)({a}) {symbol} (double)({b}))"
+        helper = {"add": "_atomic_add", "sub": "_atomic_sub", "mul": "_atomic_mul"}[node.method]
+        return f"{helper}((int64_t)({a}), (int64_t)({b}))"
     raise AtomicError(f"C backend: unsupported expression type {t}")
 
 
 def _say_stmt(expr, env, ftypes, state, pad):
+    if expr.get("inferred_type") == IR_BOOL:
+        code = _c_expr_str(expr, env, ftypes, state)
+        return f'{pad}printf("%s\\n", (({code}) != 0) ? "True" : "False");'
     ty = _ty(expr, env, ftypes, state)
     if ty == STR:
         if expr.get("type") == "string":
@@ -183,7 +250,12 @@ def _c_stmt_str(node, indent, env, ftypes, state):
     if t in ("var_assign", "assign"):
         return f'{pad}{_ident(node["name"])} = {_c_expr_str(node["expr"], env, ftypes, state)};'
     if t == "array_assign":
-        raise AtomicError("C backend: arrays not supported yet")
+        element_type = _array_element_c(node.expr.value_type)
+        target = _ident(node.name)
+        index = _c_expr_str(node.index, env, ftypes, state)
+        value = _c_expr_str(node.expr, env, ftypes, state)
+        return (f"{pad}(({element_type} *){target}.data)["
+                f"_atomic_index({target}.length, (int64_t)({index}))] = ({element_type})({value});")
     if t == "expr":
         return f'{pad}{_c_expr_str(node["expr"], env, ftypes, state)};'
     if t == "func":
@@ -267,12 +339,40 @@ PREAMBLE = [
     "#include <string.h>",
     "#include <stdint.h>",
     "#include <inttypes.h>",
+    "#include <stddef.h>",
     "",
     "#if defined(__GNUC__)",
     "#define ATOMIC_UNUSED __attribute__((unused))",
     "#else",
     "#define ATOMIC_UNUSED",
     "#endif",
+    "",
+    "typedef struct { size_t length; void *data; } atomic_array;",
+    "typedef struct atomic_allocation { void *data; struct atomic_allocation *next; } atomic_allocation;",
+    "static atomic_allocation *_atomic_allocations = NULL;",
+    "static int _atomic_cleanup_registered = 0;",
+    "static void _atomic_cleanup(void) {",
+    "    while (_atomic_allocations) { atomic_allocation *n = _atomic_allocations->next; free(_atomic_allocations->data); free(_atomic_allocations); _atomic_allocations = n; }",
+    "}",
+    "static void *_atomic_array_data(size_t count, size_t width, const void *source) {",
+    "    if (count == 0) return NULL;",
+    '    if (width != 0 && count > SIZE_MAX / width) { fputs("Array allocation too large\\n", stderr); exit(1); }',
+    "    void *data = malloc(count * width);",
+    '    if (!data) { fputs("Array allocation failed\\n", stderr); exit(1); }',
+    "    memcpy(data, source, count * width);",
+    "    atomic_allocation *entry = (atomic_allocation *)malloc(sizeof *entry);",
+    '    if (!entry) { free(data); fputs("Array allocation failed\\n", stderr); exit(1); }',
+    "    entry->data = data; entry->next = _atomic_allocations; _atomic_allocations = entry;",
+    "    if (!_atomic_cleanup_registered) { atexit(_atomic_cleanup); _atomic_cleanup_registered = 1; }",
+    "    return data;",
+    "}",
+    "static atomic_array _atomic_array_new(size_t count, size_t width, const void *source) {",
+    "    atomic_array result = { count, _atomic_array_data(count, width, source) }; return result;",
+    "}",
+    "static size_t _atomic_index(size_t length, int64_t index) {",
+    '    if (index < 0 || (uint64_t)index >= length) { fprintf(stderr, "Array index out of bounds: %" PRId64 " (length %zu)\\n", index, length); exit(1); }',
+    "    return (size_t)index;",
+    "}",
     "",
     "static int64_t _atomic_from_bits(uint64_t bits) {",
     "    int64_t result;",
@@ -339,7 +439,8 @@ def emit_c(ast) -> str:
     # Top-level bindings are file-scope variables so functions can read them.
     for s in body:
         out.append(_c_stmt_str(s, 1, top_env, ftypes, state))
-    out.append("    return 0;")
+    if not any(s.get("type") == "stop" for s in body):
+        out.append("    return 0;")
     out.append("}")
     return "\n".join(out)
 

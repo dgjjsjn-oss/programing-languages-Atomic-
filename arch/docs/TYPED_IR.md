@@ -29,8 +29,9 @@ element assignment, output, expression statements, functions, conditions,
 inclusive loops, returns, stop, and module use. Each node carries a source span;
 each expression carries a `Type`.
 
-The parser currently has no `and`, `or`, or `not` syntax, so the boolean IR
-node is reserved for a future grammar change. There is no CFG or block-ID
+The parser lowers `not`, `and`, and `or` into `BooleanOperation`. Precedence is
+`not`, comparisons, `and`, then `or`; C and Java preserve short-circuiting.
+There is no CFG or block-ID
 representation yet: control flow is a structured tree, so the verifier checks
 that nested bodies are valid sequences instead of resolving branch targets.
 
@@ -51,17 +52,25 @@ located diagnostics rather than throwing on malformed IR.
   to declare values. Its former fixed-point `_infer` pass has been removed.
 - The Java emitter uses the same IR metadata and no longer imports type
   inference or helpers from the C backend.
-- C and Java still do not support arrays, module calls, or `len`; they reject
-  those constructs with an explicit backend error. The interpreter supports
-  arrays and the `math.add/sub/mul` subset. The IR represents these features so
-  the front end can type-check them without claiming backend support.
+- C, Java, and the interpreter support fixed-length mutable arrays of `int`,
+  `float`, `bool`, and `text`, including empty arrays (typed as `int[]`),
+  indexing, assignment, `len(array)`, and bounds checks. Nested arrays and
+  arrays passed through function parameters are not supported yet. C owns a
+  tracked allocation per literal and releases those buffers at process exit;
+  Java and the interpreter use their managed array objects. Array assignment
+  aliases the same mutable array value.
+- `use math` imports the same three built-ins (`add`, `sub`, `mul`) on each
+  engine. Integer results wrap to signed 64-bit. User-authored modules,
+  exported declarations, cross-file imports and dependency-cycle detection are
+  still out of scope because there is no project/module loader yet.
 - The legacy semantic rule currently rejects floating-point arithmetic even
   though the interpreter and direct code generators can evaluate it. This is
   retained to keep the existing diagnostic contract; it needs a separate
   language-semantics decision and conformance tests.
-- Bool values still lower to integer storage in C/Java, and float formatting
-  differs between engines. `variables.atpp` remains skipped for cross-backend
-  comparison until those semantics are aligned.
+- Bool values lower to integer storage in C/Java but print as `True`/`False`
+  across engines. Float formatting differs: C uses 17 significant digits for
+  round-trip output; Python and Java use shorter forms. This is a formatting
+  difference, not evidence of distinct stored values.
 
 ## Test commands
 
