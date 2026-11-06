@@ -1,9 +1,9 @@
 ﻿# ATOMIC++
 
-Fast, simple, safe programming language. Python-level readability,
-C-level execution, Java output for Minecraft mods.
+ATOMIC++ is a programming-language prototype with an interpreter, a native C/GCC
+path, and Java output. Performance and safety guarantees are not yet established.
 
-## Status: v0.5 -- three working engines
+## Status: v0.6 -- shared typed IR in use
 
 | Engine | Command | Result |
 |---|---|---|
@@ -11,8 +11,9 @@ C-level execution, Java output for Minecraft mods.
 | Native (C + gcc) | `python atomic.py build file.atomic` | .exe, -O2 |
 | JVM (Java) | `python atomic.py java file.atomic --class MyMod` | .java for Fabric/Forge |
 
-All three produce identical output on the same program. That equality is
-enforced by tests on every run.
+The interpreter, C emitter, and Java emitter now receive the same typed IR.
+Output equality is tested only for the explicitly supported conformance subset;
+see Known gaps below and [the IR design](arch/docs/TYPED_IR.md).
 
 ## Tests
 
@@ -22,16 +23,19 @@ Run the complete test and example conformance suite from this folder:
 
 It runs the unit tests, checks and interprets every example, and compares the
 interpreter with native C and Java where their output is currently conformant.
-Array and module examples are interpreter-only; `variables.atpp` is skipped
-because bool printing and shortest float formatting still differ by backend.
+Array and module examples remain interpreter-only; `variables.atpp` is skipped
+because the interpreter prints booleans as `True`/`False`, while C and Java
+store and print them as `1`/`0`. Float formatting also differs: for `3.14`,
+the interpreter prints `3.14` and C currently prints `3.1400000000000001`.
 
 The lower-level test files can also be run individually:
 
     python tests/test_interpreter.py    46 tests  OK
     python tests/test_semantic.py        7 tests  OK
-    python tests/test_conformance.py    15 tests  OK   interpreter == native C
-    python tests/test_java_backend.py    7 tests  OK   interpreter == javac
+    python tests/test_conformance.py    18 tests  OK   interpreter == native C
+    python tests/test_java_backend.py   10 tests  OK   interpreter == javac
     python tests/test_diagnostics.py     4 tests  OK   diagnostic text is pinned
+    python tests/test_ir.py               8 tests  OK   typed nodes and verifier
 
 The unified runner was verified on 2026-11-06. Only trust this table if you re-run it. On 2026-11-05 the suite did **not**
 match the previous claim in this file: the C preamble referenced an undefined macro, so
@@ -43,15 +47,18 @@ command that proves it.
 
 These are broken today and are not described anywhere as working:
 
-- **`say` on a bool:** the interpreter prints `True`/`False`, the C backend prints `1`/`0`,
-  and the Java backend prints `false`/`true` for comparisons but `1`/`0` for bool values.
-  `bool` still has no distinct type in the backends.
+- **`say` on a bool:** the interpreter prints `True`/`False`; C and Java store booleans
+  as integer values and print `1`/`0`. Java comparison expressions can print `true`/`false`.
+- **Float formatting:** C prints `3.14` as `3.1400000000000001`; interpreter and Java print `3.14`.
 - **Arrays** work in the interpreter only; the C and Java backends reject them.
-- **Modules:** only the interpreter has `math`; the C backend rejects method calls and the
-  Java backend emits a call to a class that does not exist.
-- **No memory management.** `arch/docs/MEMORY_MODEL_RESEARCH.md` selected ARC, but no
-  backend emits reference counting, and no backend allocates heap values at all.
+- **Modules:** the interpreter supports `math.add/sub/mul`; C and Java report that module
+  calls are unsupported.
+- **Floating-point arithmetic:** the interpreter and direct C/Java emitters can evaluate it,
+  but the shared checker still rejects it to preserve its tested v0.5 diagnostic behavior.
+- **No ATOMIC++ memory model.** The C backend uses string-literal pointers; Java relies on
+  the JVM's memory manager. ATOMIC++ does not yet define ownership or manage heap values.
 
+Typed IR design and verifier: `arch/docs/TYPED_IR.md`.
 Full audit, feature matrix and roadmap: `arch/docs/AUDIT.md`.
 Sourced research behind the design decisions: `arch/docs/LANGUAGE_RESEARCH.md`.
 

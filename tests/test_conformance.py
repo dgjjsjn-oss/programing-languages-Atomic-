@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "vertical_slice"))
 
-from interpreter import parse, tokenize, run_source
+from interpreter import AtomicError, parse, tokenize, run_source
 from c_backend import emit_c, compile_c
 
 
@@ -78,6 +78,22 @@ class TestConformance(unittest.TestCase):
             "    say big\n"
             "    stop\n"
         )
+        self.assertEqual(run_source(src), _run_c(src))
+
+    def test_conformance_i64_wrap_and_maximum_loop(self):
+        src = (
+            "start:\n"
+            "    maximum = 9223372036854775807\n"
+            "    minimum = maximum + 1\n"
+            "    say minimum\n"
+            "    say maximum * 2\n"
+            "    say -minimum\n"
+            "    each i from maximum to maximum:\n"
+            "        say i\n"
+            "    stop\n"
+        )
+        expected = ["-9223372036854775808", "-2", "-9223372036854775808", "9223372036854775807"]
+        self.assertEqual(run_source(src), expected)
         self.assertEqual(run_source(src), _run_c(src))
 
     def test_conformance_division_by_zero(self):
@@ -196,6 +212,27 @@ class TestConformance(unittest.TestCase):
             "    stop\n"
         )
         self.assertEqual(run_source(src), _run_c(src))
+
+    def test_conformance_function_reads_global(self):
+        src = (
+            "make read_global():\n"
+            "    give score\n"
+            "start:\n"
+            "    score = 42\n"
+            "    say read_global()\n"
+            "    stop\n"
+        )
+        self.assertEqual(run_source(src), ["42"])
+        self.assertEqual(run_source(src), _run_c(src))
+
+    def test_c_backend_rejects_unsupported_arrays_and_modules(self):
+        array_program = parse(tokenize("start:\n    xs = [1, 2]\n    say xs[0]\n"))
+        with self.assertRaisesRegex(AtomicError, "arrays not supported"):
+            emit_c(array_program)
+
+        module_program = parse(tokenize("use math\nstart:\n    say math.add(1, 2)\n"))
+        with self.assertRaisesRegex(AtomicError, "module method calls not supported"):
+            emit_c(module_program)
 
     def test_conformance_empty_range_binds_loop_variable(self):
         """An empty range still defines the name (LANGUAGE_SPEC.md 4.1 rule 4)."""

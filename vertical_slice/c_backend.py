@@ -22,6 +22,9 @@ try:
 except ImportError:
     from vertical_slice.interpreter import AtomicError
 
+from ir import (FLOAT as IR_FLOAT, INT as IR_INT, BOOL as IR_BOOL, TEXT as IR_TEXT,
+                Type, IRProgram, build_ir, loop_variables, verify_ir)
+
 GCC = os.environ.get("ATOMIC_GCC", "gcc")
 
 INT = "int64_t"
@@ -70,125 +73,43 @@ def _c_default(ctype: str) -> str:
     return "0"
 
 
-def _join(a, b):
-    if a is None:
-        return b
-    if b is None:
-        return a
-    if a == b:
-        return a
-    if {a, b} == {INT, F64}:
-        return F64
-    raise AtomicError(f"C backend: incompatible types {a} and {b}")
-
-
 def _ty(e, env, ftypes, state):
-    """Infer the C type of an expression."""
-    t = e.get("type")
-    if t == "int":
+    """Map the type already recorded on a typed IR expression to C."""
+    ty = e.get("inferred_type")
+    if ty == IR_INT or ty == IR_BOOL:
         return INT
-    if t == "bool":
-        return INT
-    if t == "float":
+    if ty == IR_FLOAT:
         return F64
-    if t == "string":
+    if ty == IR_TEXT:
         return STR
-    if t == "var":
-        return env.get(e.get("name"), INT)
-    if t == "unary":
-        return _ty(e.get("operand"), env, ftypes, state)
-    if t == "binop":
-        op = e.get("op")
-        lt = _ty(e.get("left"), env, ftypes, state)
-        rt = _ty(e.get("right"), env, ftypes, state)
-        if op in ("is", "is not", "<", ">", "<=", ">="):
-            return INT
-        if op == "+" and lt == STR and rt == STR:
-            raise AtomicError("C backend: text concatenation not supported yet")
-        if lt == STR or rt == STR:
-            raise AtomicError("C backend: text arithmetic not supported yet")
-        if lt == F64 or rt == F64:
-            return F64
+    if isinstance(ty, Type) and ty.name == "list":
+        raise AtomicError("C backend: arrays not supported yet")
+    if ty is None:
+        raise AtomicError("C backend requires typed IR expressions")
+    raise AtomicError(f"C backend: unsupported IR type {ty}")
+
+
+def _ctype(ty: Type) -> str:
+    if ty in (IR_INT, IR_BOOL):
         return INT
-    if t == "call":
-        f = ftypes.get(e.get("name"))
-        argts = [_ty(a, env, ftypes, state) for a in (e.get("args") or [])]
-        if f is None:
-            return INT
-        params = f["params"]
-        for i, at in enumerate(argts):
-            if i < len(params):
-                new = _join(params[i], at)
-                if new != params[i]:
-                    params[i] = new
-                    state["changed"] = True
-        return f["ret"] or INT
-    if t == "method_call":
-        for a in e.get("args") or []:
-            _ty(a, env, ftypes, state)
-        return INT
-    if t == "array":
-        raise AtomicError("C backend: array literals not supported yet")
-    if t == "array_index":
-        raise AtomicError("C backend: array indexing not supported yet")
-    return INT
-
-
-def _walk(stmts, env, ftypes, state, each_vars):
-    rets = []
-    for s in stmts:
-        t = s.get("type")
-        if t in ("var_assign", "assign"):
-            ty = _ty(s.get("expr"), env, ftypes, state)
-            new = _join(env.get(s["name"]), ty)
-            if env.get(s["name"]) != new:
-                env[s["name"]] = new
-                state["changed"] = True
-        elif t == "each":
-            env[s["var"]] = INT
-            each_vars.add(s["var"])
-            _ty(s.get("start"), env, ftypes, state)
-            _ty(s.get("end"), env, ftypes, state)
-            rets += _walk(s.get("body") or [], env, ftypes, state, each_vars)
-        elif t == "when":
-            _ty(s.get("cond"), env, ftypes, state)
-            rets += _walk(s.get("body") or [], env, ftypes, state, each_vars)
-        elif t == "give":
-            rets.append(_ty(s.get("expr"), env, ftypes, state))
-        elif t in ("say", "expr"):
-            _ty(s.get("expr"), env, ftypes, state)
-    return rets
-
-
-def _infer(ast):
-    funcs = [s for s in ast if s.get("type") == "func"]
-    body = [s for s in ast if s.get("type") not in ("func", "use")]
-    ftypes = {f["name"]: {"params": [INT] * len(f["params"]), "ret": None} for f in funcs}
-    top_env, fn_envs, each_vars = {}, {}, set()
-    for _ in range(15):
-        state = {"changed": False}
-        top_env = {}
-        _walk(body, top_env, ftypes, state, each_vars)
-        fn_envs = {}
-        for f in funcs:
-            env = {p: ftypes[f["name"]]["params"][i] for i, p in enumerate(f["params"])}
-            rets = _walk(f.get("body") or [], env, ftypes, state, each_vars)
-            fn_envs[f["name"]] = env
-            rt = None
-            for r in rets:
-                rt = _join(rt, r)
-            if rt and rt != ftypes[f["name"]]["ret"]:
-                ftypes[f["name"]]["ret"] = rt
-                state["changed"] = True
-        if not state["changed"]:
-            break
-    return top_env, fn_envs, ftypes, each_vars
+    if ty == IR_FLOAT:
+        return F64
+    if ty == IR_TEXT:
+        return STR
+    if ty.name == "list":
+        raise AtomicError("C backend: arrays not supported yet")
+    raise AtomicError(f"C backend: unsupported IR type {ty}")
 
 
 def _c_expr_str(node, env, ftypes, state):
     t = node.get("type")
     if t == "int":
-        return str(node["value"])
+        value = int(node["value"])
+        if value == -(1 << 63):
+            return "INT64_MIN"
+        if value < 0:
+            return f"(-INT64_C({-value}))"
+        return f"INT64_C({value})"
     if t == "bool":
         # Must be an integer literal: Python's True/False would emit `True`,
         # which is not C. bool is represented as int64_t in this backend.
@@ -205,7 +126,7 @@ def _c_expr_str(node, env, ftypes, state):
             ty = _ty(node["operand"], env, ftypes, state)
             if ty == F64:
                 return f"(-({inner}))"
-            return f"((int64_t)(-({inner})))"
+            return f"_atomic_neg((int64_t)({inner}))"
         return f"({inner})"
     if t == "binop":
         op = node["op"]
@@ -218,6 +139,8 @@ def _c_expr_str(node, env, ftypes, state):
                 cmp = f"(strcmp({a}, {b}) == 0)"
                 return cmp if op == "is" else f"(!{cmp})"
             return f"(({a}) == ({b}))" if op == "is" else f"(({a}) != ({b}))"
+        if lt == STR or rt == STR:
+            raise AtomicError("C backend: text arithmetic and concatenation not supported yet")
         if op == "/":
             if lt == F64 or rt == F64:
                 return f"((double)({a}) / (double)({b}))"
@@ -225,8 +148,12 @@ def _c_expr_str(node, env, ftypes, state):
         sym = {"<": "<", ">": ">", "<=": "<=", ">=": ">=", "+": "+", "-": "-", "*": "*"}.get(op, op)
         if lt == F64 or rt == F64:
             return f"((double)({a}) {sym} (double)({b}))"
+        if op in ("+", "-", "*"):
+            return f"_atomic_{ {'+': 'add', '-': 'sub', '*': 'mul'}[op] }((int64_t)({a}), (int64_t)({b}))"
         return f"((int64_t)({a}) {sym} (int64_t)({b}))"
     if t == "call":
+        if node.get("name") == "len":
+            raise AtomicError("C backend: len is not implemented yet")
         args = ", ".join(_c_expr_str(a, env, ftypes, state) for a in node["args"])
         return f"{_ident(node['name'])}({args})"
     if t == "method_call":
@@ -243,7 +170,7 @@ def _say_stmt(expr, env, ftypes, state, pad):
     code = _c_expr_str(expr, env, ftypes, state)
     if ty == F64:
         return f"{pad}_atomic_say_f64({code});"
-    return f'{pad}printf("%lld\\n", (int64_t)({code}));'
+    return f'{pad}printf("%" PRId64 "\\n", (int64_t)({code}));'
 
 
 def _c_stmt_str(node, indent, env, ftypes, state):
@@ -277,15 +204,20 @@ def _c_stmt_str(node, indent, env, ftypes, state):
         depth = state.get("loop_depth", 0) + 1
         state["loop_depth"] = depth
         hidden = f"_atomic_i{depth}"
+        end_name = f"_atomic_end{depth}"
         lines = [
             # Bind the loop variable to the start value first: when the range is
             # empty it is still defined, and `start` is evaluated exactly once.
             f"{pad}{var} = (int64_t)({start});",
-            f"{pad}for (int64_t {hidden} = {var}; {hidden} <= (int64_t)({end}); {hidden}++) {{",
+            f"{pad}int64_t {end_name} = (int64_t)({end});",
+            f"{pad}int64_t {hidden} = {var};",
+            f"{pad}while ({hidden} <= {end_name}) {{",
             f"{pad}    {var} = {hidden};",
         ]
         for s in node["body"]:
             lines.append(_c_stmt_str(s, indent + 1, env, ftypes, state))
+        lines.append(f"{pad}    if ({hidden} == {end_name}) break;")
+        lines.append(f"{pad}    {hidden} = _atomic_add({hidden}, INT64_C(1));")
         lines.append(f"{pad}}}")
         state["loop_depth"] = depth - 1
         return "\n".join(lines)
@@ -340,7 +272,24 @@ PREAMBLE = [
     "#define ATOMIC_UNUSED",
     "#endif",
     "",
-    "static long long _atomic_div(long long a, long long b) {",
+    "static int64_t _atomic_from_bits(uint64_t bits) {",
+    "    int64_t result;",
+    "    memcpy(&result, &bits, sizeof result);",
+    "    return result;",
+    "}",
+    "static int64_t _atomic_add(int64_t a, int64_t b) {",
+    "    return _atomic_from_bits((uint64_t)a + (uint64_t)b);",
+    "}",
+    "static int64_t _atomic_sub(int64_t a, int64_t b) {",
+    "    return _atomic_from_bits((uint64_t)a - (uint64_t)b);",
+    "}",
+    "static int64_t _atomic_mul(int64_t a, int64_t b) {",
+    "    return _atomic_from_bits((uint64_t)a * (uint64_t)b);",
+    "}",
+    "static int64_t _atomic_neg(int64_t a) {",
+    "    return _atomic_from_bits((uint64_t)0 - (uint64_t)a);",
+    "}",
+    "static int64_t _atomic_div(int64_t a, int64_t b) {",
     '    if (b == 0) { fprintf(stderr, "Division by zero\\n"); exit(1); }',
     "    if (a == INT64_MIN && b == -1) return a;",
     "    return a / b;",
@@ -359,18 +308,33 @@ PREAMBLE = [
 
 
 def emit_c(ast) -> str:
-    """Emit typed C source from the parser AST."""
-    top_env, fn_envs, ftypes, each_vars = _infer(ast)
+    """Emit C from typed IR (AST input remains accepted as a compatibility API)."""
+    program = ast if isinstance(ast, IRProgram) else build_ir(ast)
+    invalid = verify_ir(program)
+    if invalid:
+        raise AtomicError("Invalid typed IR: " + invalid[0]["message"])
+    top_env = {name: _ctype(ty) for name, ty in program.global_types.items()}
+    fn_envs = {name: {key: _ctype(ty) for key, ty in values.items()}
+               for name, values in program.function_locals.items()}
+    ftypes = {
+        name: {"params": [_ctype(ty) for ty in sig[0]], "ret": _ctype(sig[1])}
+        for name, sig in program.function_types.items()
+    }
+    each_vars = loop_variables(program.body)
     state = {"changed": False}
-    body = [s for s in ast if s.get("type") not in ("func", "use")]
-    funcs = [s for s in ast if s.get("type") == "func"]
+    body = [s for s in program if s.get("type") not in ("func", "use")]
+    funcs = [s for s in program if s.get("type") == "func"]
 
     out = list(PREAMBLE)
+    for name, ty in sorted(top_env.items()):
+        out.append(f"static {ty} {_ident(name)} = {_c_default(ty)};")
+    if top_env:
+        out.append("")
     for f in funcs:
         out.append(_c_func(f, fn_envs[f["name"]], ftypes, each_vars, state))
         out.append("")
     out.append("int main(void) {")
-    out += _decls(top_env, each_vars)
+    # Top-level bindings are file-scope variables so functions can read them.
     for s in body:
         out.append(_c_stmt_str(s, 1, top_env, ftypes, state))
     out.append("    return 0;")

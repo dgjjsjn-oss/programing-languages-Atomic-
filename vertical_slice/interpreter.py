@@ -811,7 +811,7 @@ class Interpreter:
         if stype == "say":
             val = self.eval_expr(stmt["expr"], env)
             self.say(val)
-        elif stype == "assign":
+        elif stype in ("assign", "var_assign"):
             val = self.eval_expr(stmt["expr"], env)
             env.set(stmt["name"], val)
         elif stype == "expr":
@@ -884,9 +884,13 @@ def parse(tokens: List[Token]):
 def run_source(text: str):
     tokens = tokenize(text)
     ast = parse(tokens)
+    # The interpreter executes the same resolved, typed tree passed onward to
+    # code generation; parsed syntax dictionaries stop at this boundary.
+    from ir import build_ir
+    program = build_ir(ast)
     interp = Interpreter()
     try:
-        interp.run(ast)
+        interp.run(program.body)
     except SystemExit:
         pass
     return interp.output

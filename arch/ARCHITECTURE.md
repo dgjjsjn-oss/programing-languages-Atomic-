@@ -1,152 +1,86 @@
-# ATOMIC++ Architecture — Compiler Design
+# ATOMIC++ Architecture
 
-**Status:** Draft — Phase 1 prototype  
-**Target:** Windows machine with `gcc`/`g++` (MinGW) available, no LLVM installed.
+**Current milestone:** v0.6 — shared structured typed IR
 
----
+**Implementation:** Python front end, native C via GCC, Java via `javac`
+**Status:** Prototype. Feature support is limited to the tested subset below.
 
-## 1. Two Execution Paths
+## Current pipeline
 
-ATOMIC++ has two ways to run a `.atpp` file:
-
-| Mode | Command | What happens | Speed | Use case |
-|------|---------|-------------|-------|----------|
-| Interpreted | `atomic++ run file.atpp` | Python interpreter executes the AST directly | Python speed | Learning, quick scripts |
-| Compiled | `atomic++ build file.atpp` | Transpile to C → `gcc -O3` → native `.exe` | Near C++ | Games, tools, production |
-
-Both paths must accept the same source code and produce the same output.
-
----
-
-## 2. Compiler Pipeline
-
-```
-SOURCE CODE (.atpp text)
-        │
-        ▼
-┌───────────────┐
-│   LEXER       │  Chops text into tokens (keywords, numbers, strings, symbols)
-└───────────────┘
-        │
-        ▼
-┌───────────────┐
-│   PARSER      │  Arranges tokens into an Abstract Syntax Tree (AST)
-└───────────────┘
-        │
-        ▼
-┌───────────────┐
-│ SEMANTIC      │  Type checking, variable resolution, bounds-check setup
-│   ANALYZER    │
-└───────────────┘
-        │
-        ▼
-      ┌───────┐
-      │  AST  │  Intermediate representation (tree of program structure)
-      └───────┘
-        │        ├──────────────┐
-        ▼        ▼              ▼
-┌───────────────┐  ┌─────────────────────┐
-│ INTERPRETER   │  │ C CODE EMITTER      │  (Phase 2)
-│   (Phase 1)   │  │ walks AST, emits C  │
-└───────────────┘  └─────────────────────┘
-        │                     │
-        ▼                     ▼
-   Runs directly         gcc -O3 -march=native
-                      compiles C → .exe
+```text
+source
+  → lexer and parser (`vertical_slice/interpreter.py`)
+  → parsed syntax dictionaries
+  → name resolution and type construction (`vertical_slice/ir.py`)
+  → typed `IRProgram` plus verifier diagnostics
+       ├─ interpreter (`Interpreter.run`)
+       ├─ C emitter → GCC → executable
+       └─ Java emitter → javac → JVM class
 ```
 
----
+`atomic.py` builds one `IRProgram` per command and shares that object with the
+selected consumer. `run_source()` also lowers parsed syntax before interpreting
+it. `semantic.analyze()` is a compatibility wrapper over the same IR builder;
+there is no second semantic checker.
 
-## 3. Components
+## Typed IR
 
-### 3.1 Lexer
-Converts raw text into a stream of tokens. Handles:
-- Keywords (`start`, `stop`, `say`, `make`, `use`, `when`, `each`, `give`, `true`, `false`)
-- Identifiers
-- Integer and float literals
-- String literals
-- Operators (`+`, `-`, `*`, `/`, `is`, `is not`, `<`, `>`, `<=`, `>=`)
-- Comments (`//`)
+The IR is defined in [TYPED_IR.md](docs/TYPED_IR.md). It consists of explicit
+expression and statement classes with source spans. Every expression records a
+language `Type`; the program stores global types and function signatures. The
+IR is structured rather than CFG/SSA: branches and loops own nested statement
+sequences, so there are no block IDs or branch targets to resolve yet.
 
-### 3.2 Parser
-Builds an AST from tokens. Uses recursive descent (simple, readable, beginner-friendly). Produces nodes for:
-- Program (list of statements)
-- Function definition
-- Variable assignment
-- If / when statement
-- Each / loop statement
-- Binary expression
-- Print statement
-- Return (give) statement
-- Array literal and index access
+`verify_ir()` checks IR shape and consistency before code generation. C and Java
+map IR types to their target representation; they do not infer source types.
+Both emitters retain a compatibility API that accepts parser output, but it
+immediately builds and verifies typed IR.
 
-### 3.3 Semantic Analyzer
-Walks the AST and checks:
-- Variables are defined before use
-- Types match (no adding a string to an integer without explicit conversion)
-- Array indices are within bounds (where statically knowable)
-- Functions return the declared type
+## Backend support
 
-### 3.4 Interpreter (Phase 1)
-Tree-walking interpreter written in Python. Executes the AST directly:
-- Maintains an environment (variable → value mapping)
-- Evaluates expressions bottom-up
-- Executes statements top-down
-- Reports errors with source line numbers
+| Feature | Interpreter | C/GCC | Java/JVM |
+|---|---|---|---|
+| Integer arithmetic, comparisons, functions, conditions, loops | Supported | Supported | Supported |
+| Float values and direct backend arithmetic | Supported | Supported | Supported |
+| Float arithmetic through checked CLI | Checker currently rejects it | Checker currently rejects it | Checker currently rejects it |
+| Text literals and value equality | Supported | Supported | Supported |
+| Text concatenation | Supported | Rejected explicitly | Supported |
+| Arrays | Supported | Rejected explicitly | Rejected explicitly |
+| `math.add/sub/mul` | Supported | Rejected explicitly | Rejected explicitly |
+| `len` | Supported by interpreter | Rejected explicitly | Rejected explicitly |
+| Boolean output formatting | Python `True`/`False` | Integer `1`/`0` | Integer values; comparison expressions print Java booleans |
 
-### 3.5 C Code Emitter (Phase 2)
-Walks the same AST and emits equivalent C code:
-- Variables → C variables with inferred types
-- Functions → C functions
-- Loops → C `for` loops
-- Conditions → C `if` statements
-- Arrays → C arrays with bounds checks
-- Output → `printf` calls
+These are prototype capabilities, not performance or safety guarantees. The
+README's Known gaps section records the current float-formatting difference
+and the exact cross-backend examples excluded from the conformance runner.
 
-The emitted C is then compiled with `gcc -O3 -march=native` to produce a native `.exe`.
+## Numeric behavior
 
----
+The interpreter applies signed 64-bit two's-complement wrapping to integer
+operations. The C backend now implements integer `+`, `-`, `*`, and unary minus
+using unsigned arithmetic followed by a bit-preserving copy into `int64_t`, so
+the generated C does not invoke signed-overflow undefined behavior. Integer
+division checks zero and handles `INT64_MIN / -1` explicitly. Inclusive C and
+Java loops avoid incrementing past `INT64_MAX`.
 
-## 4. AST Node Types (Phase 1)
+The semantics still need broader formalization. The existing checker rejects
+floating arithmetic to preserve its diagnostic contract even though direct
+interpreter/C/Java operations can evaluate it. C prints a float such as `3.14`
+as `3.1400000000000001`; this is an open conformance issue.
 
-```
-Program
-  └─ statements: [Statement]
+## Limitations
 
-Statement
-  ├─ VarAssign(name, value)
-  ├─ FunctionDef(name, params, body)
-  ├─ When(condition, then_body)
-  ├─ Each(variable, start, end, body)
-  ├─ Say(expression)
-  ├─ Give(expression)
-  └─ Stop
+- Arrays and module calls have typed IR nodes but are not implemented by C or
+  Java; unsupported constructs produce explicit backend errors.
+- No records, generics, async, concurrency, package manager, or standard
+  library beyond the current interpreter's small built-ins.
+- No ARC, garbage collector, or dynamic text/list allocation runtime exists.
+- There is no CFG, SSA, optimizer, parser fuzzer, or randomized differential
+  generator yet.
+- The compiler has no cross-platform CI. Current verification uses the local
+  Windows toolchain.
 
-Expression
-  ├─ IntegerLiteral(value)
-  ├─ FloatLiteral(value)
-  ├─ StringLiteral(value)
-  ├─ BooleanLiteral(value)
-  ├─ Variable(name)
-  ├─ BinaryOp(left, op, right)
-  ├─ Call(name, args)
-  └─ ArrayIndex(array, index)
-```
-
----
-
-## 5. Design Decisions (recorded)
-
-| Decision | Rationale |
-|----------|-----------|
-| Tree-walking interpreter in Python | Runs immediately; no compilation step needed for Phase 1 |
-| C-transpile backend (not LLVM) | `gcc` is installed; LLVM is not. Building LLVM takes hours. C-transpile is the proven Nim playbook. |
-| Recursive descent parser | Simple to understand, easy to debug, beginner-friendly |
-| Indentation-based structure | No braces/semicolons; easier for beginners to read |
-| ARC memory (planned Phase 2) | Automatic cleanup, no GC pauses, simpler than Rust borrow checker |
-
----
-
-## 6. Conformance
-
-The interpreter and C emitter must accept the same grammar. A shared test suite runs every `.atpp` example through both paths and compares output.
+Run `python run_tests.py` from the repository root. It runs the unit tests,
+checks and interprets every example, and compares outputs for the examples that
+are currently conformant across engines. Skipped examples are printed with the
+reason; they are not counted as backend passes.

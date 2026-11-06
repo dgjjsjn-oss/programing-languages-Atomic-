@@ -23,8 +23,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD_DIR = os.path.join(HERE, "build")
 sys.path.insert(0, os.path.join(HERE, "vertical_slice"))
 
-from interpreter import AtomicError, parse, tokenize, run_source  # noqa: E402
-from semantic import analyze                                      # noqa: E402
+from interpreter import AtomicError, Interpreter, parse, tokenize  # noqa: E402
+from ir import build_ir                                            # noqa: E402
 
 
 def usage():
@@ -40,15 +40,13 @@ def report(path, diags):
     return 1
 
 
-def check_source(path, src):
-    """Analyze before running or generating code.
-
-    `run`, `build` and `java` used to skip the analyzer entirely, so they accepted
-    programs that `check` rejects. Every entry point must agree on what is legal
-    (LANGUAGE_SPEC.md 4.1, rule 7: one truth).
-    """
-    diags = analyze(parse(tokenize(src)))
-    return report(path, diags) if diags else 0
+def checked_program(path, src):
+    """Build the typed IR once and share it with checking and execution/codegen."""
+    program = build_ir(parse(tokenize(src)))
+    if program.diagnostics:
+        report(path, program.diagnostics)
+        return None
+    return program
 
 
 def main(argv):
@@ -63,26 +61,31 @@ def main(argv):
 
     try:
         if cmd == "run":
-            if check_source(path, src):
+            program = checked_program(path, src)
+            if program is None:
                 return 1
-            for line in run_source(src):
+            for line in Interpreter().run(program.body):
                 print(line)
             return 0
 
         if cmd == "check":
-            diags = analyze(src)
+            diags = build_ir(parse(tokenize(src))).diagnostics
             for d in diags:
                 print(f"{path}:{d['line']}:{d['col']}: {d['code']}: {d['message']}")
             print(f"{len(diags)} problem(s)")
             return 1 if diags else 0
 
         if cmd == "c":
+            program = checked_program(path, src)
+            if program is None:
+                return 1
             from c_backend import emit_c
-            print(emit_c(parse(tokenize(src))))
+            print(emit_c(program))
             return 0
 
         if cmd == "build":
-            if check_source(path, src):
+            program = checked_program(path, src)
+            if program is None:
                 return 1
             from c_backend import compile_c, emit_c
             out = None
@@ -92,7 +95,7 @@ def main(argv):
                 out = os.path.join(BUILD_DIR, os.path.basename(os.path.splitext(path)[0]) + ".exe")
             out = os.path.abspath(out)
             os.makedirs(os.path.dirname(out), exist_ok=True)
-            c_src = emit_c(parse(tokenize(src)))
+            c_src = emit_c(program)
             compile_c(c_src, out,
                       portable="--native" not in flags,
                       march_native="--native" in flags,
@@ -106,13 +109,14 @@ def main(argv):
             return 0
 
         if cmd == "java":
-            if check_source(path, src):
+            program = checked_program(path, src)
+            if program is None:
                 return 1
             from java_backend import compile_java, emit_java
             cls = flags[flags.index("--class") + 1] if "--class" in flags else "AtomicMain"
             out_dir = os.path.join(BUILD_DIR, "java")
             os.makedirs(out_dir, exist_ok=True)
-            java_src = emit_java(parse(tokenize(src)), cls)
+            java_src = emit_java(program, cls)
             compile_java(java_src, out_dir, cls)
             print(f"java: {os.path.join(out_dir, cls)}.java")
             r = subprocess.run(["java", "-cp", out_dir, cls], capture_output=True, text=True)

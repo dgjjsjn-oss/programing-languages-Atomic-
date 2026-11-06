@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "vertical_slice"))
 
-from interpreter import parse, tokenize, run_source
+from interpreter import AtomicError, parse, tokenize, run_source
 from java_backend import emit_java, compile_java
 
 
@@ -26,6 +26,15 @@ def _run_java(src: str):
 
 
 class TestJavaBackend(unittest.TestCase):
+    def test_java_backend_rejects_unsupported_arrays_and_modules(self):
+        array_program = parse(tokenize("start:\n    xs = [1, 2]\n    say xs[0]\n"))
+        with self.assertRaisesRegex(AtomicError, "arrays not supported"):
+            emit_java(array_program)
+
+        module_program = parse(tokenize("use math\nstart:\n    say math.add(1, 2)\n"))
+        with self.assertRaisesRegex(AtomicError, "module calls are not supported"):
+            emit_java(module_program)
+
     def test_arithmetic_loop_condition(self):
         src = (
             "start:\n"
@@ -48,6 +57,18 @@ class TestJavaBackend(unittest.TestCase):
             "    say fact(5)\n"
             "    stop\n"
         )
+        self.assertEqual(run_source(src), _run_java(src))
+
+    def test_function_reads_global(self):
+        src = (
+            "make read_global():\n"
+            "    give score\n"
+            "start:\n"
+            "    score = 42\n"
+            "    say read_global()\n"
+            "    stop\n"
+        )
+        self.assertEqual(run_source(src), ["42"])
         self.assertEqual(run_source(src), _run_java(src))
 
     def test_float_and_text(self):
@@ -73,6 +94,22 @@ class TestJavaBackend(unittest.TestCase):
             "    say b\n"
             "    stop\n"
         )
+        self.assertEqual(run_source(src), _run_java(src))
+
+    def test_i64_wrap_and_maximum_loop(self):
+        src = (
+            "start:\n"
+            "    maximum = 9223372036854775807\n"
+            "    minimum = maximum + 1\n"
+            "    say minimum\n"
+            "    say maximum * 2\n"
+            "    say -minimum\n"
+            "    each i from maximum to maximum:\n"
+            "        say i\n"
+            "    stop\n"
+        )
+        expected = ["-9223372036854775808", "-2", "-9223372036854775808", "9223372036854775807"]
+        self.assertEqual(run_source(src), expected)
         self.assertEqual(run_source(src), _run_java(src))
 
     def test_bool_condition_and_loop_variable(self):

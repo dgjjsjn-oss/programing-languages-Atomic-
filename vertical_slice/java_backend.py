@@ -15,10 +15,38 @@ import subprocess
 
 try:
     from interpreter import AtomicError
-    from c_backend import _infer, F64, STR, INT
 except ImportError:
     from vertical_slice.interpreter import AtomicError
-    from vertical_slice.c_backend import _infer, F64, STR, INT
+
+from ir import (FLOAT as IR_FLOAT, INT as IR_INT, BOOL as IR_BOOL, TEXT as IR_TEXT,
+                Type, IRProgram, build_ir, loop_variables, verify_ir)
+
+INT = "int64_t"
+F64 = "double"
+STR = "const char *"
+
+
+def _ctype(ty: Type) -> str:
+    if ty in (IR_INT, IR_BOOL):
+        return INT
+    if ty == IR_FLOAT:
+        return F64
+    if ty == IR_TEXT:
+        return STR
+    if ty.name == "list":
+        raise AtomicError("Java backend: arrays not supported yet")
+    raise AtomicError(f"Java backend: unsupported IR type {ty}")
+
+
+def _ir_backend_type(expr) -> str:
+    ty = expr.get("inferred_type")
+    if ty == IR_TEXT:
+        return STR
+    if ty == IR_FLOAT:
+        return F64
+    if ty in (IR_INT, IR_BOOL):
+        return INT
+    raise AtomicError(f"Java backend: unsupported IR type {ty}")
 
 _J_KEYWORDS = {
     "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char",
@@ -89,9 +117,8 @@ def _expr(e, env, ftypes, state, in_main):
         op = e["op"]
         a = _expr(e["left"], env, ftypes, state, in_main)
         b = _expr(e["right"], env, ftypes, state, in_main)
-        from c_backend import _ty
-        lt = _ty(e["left"], env, ftypes, state)
-        rt = _ty(e["right"], env, ftypes, state)
+        lt = _ir_backend_type(e["left"])
+        rt = _ir_backend_type(e["right"])
         if op == "is":
             if lt == STR and rt == STR:
                 return f"({a}.equals({b}))"
@@ -104,16 +131,16 @@ def _expr(e, env, ftypes, state, in_main):
                "+": "+", "-": "-", "*": "*", "/": "/"}.get(op, op)
         return f"(({a}) {sym} ({b}))"
     if t == "call":
+        if e.get("name") == "len":
+            raise AtomicError("Java backend: len is not implemented yet")
         args = ", ".join(_expr(a, env, ftypes, state, in_main) for a in e["args"])
         return f"{_jident(e['name'])}({args})"
     if t == "method_call":
-        args = ", ".join(_expr(a, env, ftypes, state, in_main) for a in e["args"])
-        return f"{_jident(e['module'])}.{_jident(e['method'])}({args})"
+        raise AtomicError("Java backend: module calls are not supported yet")
     raise AtomicError(f"Java backend: unsupported expression type {t}")
 
 
 def _stmt(s, indent, env, ftypes, state, each_vars, in_main):
-    from c_backend import _ty
     t = s.get("type")
     pad = "    " * indent
     if t == "say":
@@ -139,15 +166,20 @@ def _stmt(s, indent, env, ftypes, state, each_vars, in_main):
         depth = state.get("loop_depth", 0) + 1
         state["loop_depth"] = depth
         hidden = f"_atomic_i{depth}"
+        end_name = f"_atomic_end{depth}"
         lines = [
             # Bind to the start value first: defined even for an empty range, and
             # the start expression is evaluated exactly once.
             f"{pad}{var} = (long)({start});",
-            f"{pad}for (long {hidden} = {var}; {hidden} <= (long)({end}); {hidden}++) {{",
+            f"{pad}long {end_name} = (long)({end});",
+            f"{pad}long {hidden} = {var};",
+            f"{pad}while ({hidden} <= {end_name}) {{",
             f"{pad}    {var} = {hidden};",
         ]
         for x in s["body"]:
             lines.append(_stmt(x, indent + 1, env, ftypes, state, each_vars, in_main))
+        lines.append(f"{pad}    if ({hidden} == {end_name}) break;")
+        lines.append(f"{pad}    {hidden} = {hidden} + 1L;")
         lines.append(f"{pad}}}")
         state["loop_depth"] = depth - 1
         return "\n".join(lines)
@@ -186,13 +218,28 @@ def _decls(env, each_vars, exclude=()):
 
 
 def emit_java(ast, class_name="AtomicMain") -> str:
-    """Emit a complete, dependency-free Java class."""
-    top_env, fn_envs, ftypes, each_vars = _infer(ast)
+    """Emit Java from typed IR (AST input remains accepted as a compatibility API)."""
+    program = ast if isinstance(ast, IRProgram) else build_ir(ast)
+    invalid = verify_ir(program)
+    if invalid:
+        raise AtomicError("Invalid typed IR: " + invalid[0]["message"])
+    top_env = {name: _ctype(ty) for name, ty in program.global_types.items()}
+    fn_envs = {name: {key: _ctype(ty) for key, ty in values.items()}
+               for name, values in program.function_locals.items()}
+    ftypes = {
+        name: {"params": [_ctype(ty) for ty in signature[0]], "ret": _ctype(signature[1])}
+        for name, signature in program.function_types.items()
+    }
+    each_vars = loop_variables(program.body)
     state = {"changed": False}
-    body = [s for s in ast if s.get("type") not in ("func", "use")]
-    funcs = [s for s in ast if s.get("type") == "func"]
+    body = [s for s in program if s.get("type") not in ("func", "use")]
+    funcs = [s for s in program if s.get("type") == "func"]
 
     out = [f"public class {class_name} {{", ""]
+    for name, ty in sorted(top_env.items()):
+        out.append(f"    static {_jtype(ty)} {_jident(name)} = {_default(ty)};")
+    if top_env:
+        out.append("")
     for f in funcs:
         info = ftypes[f["name"]]
         ret = _jtype(info["ret"] or INT)
@@ -210,7 +257,7 @@ def emit_java(ast, class_name="AtomicMain") -> str:
         out.append("    }")
         out.append("")
     out.append("    public static void main(String[] args) {")
-    out += _decls(top_env, each_vars)
+    # Top-level bindings are static fields so generated functions share them.
     for x in body:
         out.append(_stmt(x, 2, top_env, ftypes, state, each_vars, True))
     out.append("    }")
