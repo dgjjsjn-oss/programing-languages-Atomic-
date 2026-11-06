@@ -1,0 +1,11 @@
+// fib.atpp — recursive Fibonacci
+make fib(n):
+    when n is 0:
+        give 0
+    when n is 1:
+        give 1
+    give fib(n - 1) + fib(n - 2)
+
+start:
+    say fib(10)
+    stop

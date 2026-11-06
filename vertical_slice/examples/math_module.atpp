@@ -1,0 +1,6 @@
+// math_module.atpp — using the math module
+use math
+start:
+    say math.add(2, 3)
+    say math.mul(4, 5)
+    stop

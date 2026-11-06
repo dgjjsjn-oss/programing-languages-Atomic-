@@ -1,0 +1,13 @@
+// variables.atpp — variables of all types
+start:
+    hp = 100
+    score = 0
+    name = "Player"
+    pi = 3.14
+    alive = true
+    say hp
+    say score
+    say name
+    say pi
+    say alive
+    stop

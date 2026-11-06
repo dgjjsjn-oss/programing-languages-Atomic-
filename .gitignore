@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+
+# Compiler output belongs here, never beside source files.
+build/
+
+# Native and JVM build products from older versions of the CLI.
+*.exe
+*.class
+*.exe.c
+
+# Local editor and test-runner state.
+.pytest_cache/
+.coverage

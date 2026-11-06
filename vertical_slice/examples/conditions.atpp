@@ -1,0 +1,11 @@
+// conditions.atpp — when (if) statements
+start:
+    hp = 100
+    when hp is 0:
+        say "Game Over"
+        stop
+    when hp < 50:
+        say "Low health"
+    when hp > 50:
+        say "Healthy"
+    stop

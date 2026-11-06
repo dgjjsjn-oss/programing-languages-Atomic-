@@ -1,0 +1,5 @@
+// loops.atpp — each loop
+start:
+    each i from 0 to 5:
+        say i
+    stop

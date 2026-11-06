@@ -1,0 +1,11 @@
+// functions.atpp — functions with give
+make add(a, b):
+    give a + b
+
+make triple(x):
+    give x * 3
+
+start:
+    say add(3, 4)
+    say triple(7)
+    stop

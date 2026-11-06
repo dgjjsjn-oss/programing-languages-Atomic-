@@ -1,0 +1,16 @@
+﻿// ATOMIC++ example -- logic for a Minecraft client mod.
+// Build with Java backend, drop the generated class into a Fabric project.
+
+make damage(base, power):
+    give base * power / 2
+
+make mana_regen(level):
+    give level * 3 + 5
+
+start:
+    say "ATOMIC++ mod helper"
+    each level from 1 to 3:
+        say mana_regen(level)
+    say damage(20, 2)
+    say 7 / 2
+    stop

@@ -1,0 +1,7 @@
+// arrays.atpp — arrays with bounds checking
+start:
+    scores = [10, 20, 30]
+    say scores[0]
+    say scores[1]
+    say scores[2]
+    stop

@@ -1,0 +1,4 @@
+// hello.atpp — ATOMIC++ first program
+start:
+    say "Hello, ATOMIC++"
+    stop
