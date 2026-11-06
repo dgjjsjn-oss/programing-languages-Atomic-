@@ -97,6 +97,8 @@ def _j_escape(s: str) -> str:
 
 
 def _expr(e, env, ftypes, state, in_main):
+    if e.get("ir_kind") == "BooleanOperation":
+        raise AtomicError("Java backend: boolean operations are not supported yet")
     t = e.get("type")
     if t == "int":
         return str(e["value"]) + "L"

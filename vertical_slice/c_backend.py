@@ -102,6 +102,8 @@ def _ctype(ty: Type) -> str:
 
 
 def _c_expr_str(node, env, ftypes, state):
+    if node.get("ir_kind") == "BooleanOperation":
+        raise AtomicError("C backend: boolean operations are not supported yet")
     t = node.get("type")
     if t == "int":
         value = int(node["value"])

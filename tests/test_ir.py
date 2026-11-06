@@ -7,8 +7,11 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "vertical_slice"))
 
 from interpreter import parse, tokenize
+from interpreter import Interpreter, AtomicError
+from c_backend import emit_c
+from java_backend import emit_java
 from ir import (
-    INT, FLOAT, BOOL, TEXT, Arithmetic, ArrayLiteral, Assignment, Call,
+    INT, FLOAT, BOOL, TEXT, Arithmetic, ArrayLiteral, Assignment, BooleanOperation, Call,
     Comparison, Conditional, Function, IRProgram, Literal, Return, Say, Span, Type,
     Variable, build_ir, verify_ir,
 )
@@ -88,6 +91,19 @@ class TestIRVerifier(unittest.TestCase):
         condition = Comparison("is", Literal(1, INT, Span()), Literal(1, INT, Span()), BOOL, Span())
         malformed = IRProgram((Conditional(condition, [], Span()),), {}, {}, ())
         self.assertTrue(any("Block body" in d["message"] for d in verify_ir(malformed)))
+
+    def test_boolean_operation_short_circuits_in_interpreter_and_is_explicitly_unavailable_in_backends(self):
+        false_value = Literal(False, BOOL, Span())
+        true_value = Literal(True, BOOL, Span())
+        expression = BooleanOperation("and", (false_value, true_value), BOOL, Span())
+        program = IRProgram((Say(expression, Span()),), {}, {}, ())
+        self.assertEqual(verify_ir(program), [])
+        output = Interpreter().run(program.body)
+        self.assertIn("False", output)
+        with self.assertRaisesRegex(AtomicError, "boolean operations are not supported"):
+            emit_c(program)
+        with self.assertRaisesRegex(AtomicError, "boolean operations are not supported"):
+            emit_java(program)
 
 
 if __name__ == "__main__":

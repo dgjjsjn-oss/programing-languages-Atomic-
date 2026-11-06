@@ -722,6 +722,22 @@ class Interpreter:
                 return -v
             return v
         if ntype == "binop":
+            if node.get("ir_kind") == "BooleanOperation":
+                op = node["op"]
+                operands = node["operands"]
+                if op == "not":
+                    return not bool(self.eval_expr(operands[0], env))
+                if op == "and":
+                    for operand in operands:
+                        if not bool(self.eval_expr(operand, env)):
+                            return False
+                    return True
+                if op == "or":
+                    for operand in operands:
+                        if bool(self.eval_expr(operand, env)):
+                            return True
+                    return False
+                raise AtomicError(f"Unknown boolean operator {op}")
             left = self.eval_expr(node["left"], env)
             right = self.eval_expr(node["right"], env)
             op = node["op"];
